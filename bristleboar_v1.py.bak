@@ -1,0 +1,46 @@
+"""Bristleboar - Common forest boar: barrel body, tusks, a leafy mohawk. Faces -Y."""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from quadruped import build, standard_eyes, standard_jaw
+
+
+def head(c):
+    m, H, h, g = c.m, c.H, c.h, c.grow
+    m.box('Head', 'body', H(0, -0.9, 0.0), (2.1 * h, 2.1 * h, 1.8 * h), bevel=0.35 * h, segs=1,
+          taper=dict(axis='y', end=-1, scale=(0.85, 0.85)))
+    m.box('Head', 'snout', H(0, -2.1, -0.15), (1.25 * h, 0.65 * h, 0.95 * h), bevel=0.18 * h, segs=1)
+    for side, s in c.SIDES:
+        m.box('Head', 'eye_dark', H(0.25 * s, -2.44, -0.08), (0.2 * h, 0.06 * h, 0.28 * h), bevel=0.0)
+        # tusks curl up from the lower jaw corners
+        m.spike('Jaw', 'tusk', H(0.5 * s, -1.85, -0.75), (0.35 * s, -0.45, 1), (0.35 + 0.65 * g) * h, 0.26 * h)
+        m.box('Head', 'body', H(0.85 * s, -0.25, 0.85), (0.65 * h, 0.16 * h, 0.85 * h), rot=(15, 0, 35 * s), bevel=0.05 * h)
+        m.box('Head', 'snout', H(0.86 * s, -0.33, 0.83), (0.4 * h, 0.06 * h, 0.55 * h), rot=(15, 0, 35 * s), bevel=0.0)
+    standard_eyes(c, x=0.95, y=-1.0, z=0.3, size=0.38)
+    standard_jaw(c, width=1.55, length=1.9)
+
+
+def decor(c):
+    m, g = c.m, c.grow
+    # leafy mohawk from the crown down the spine
+    m.spike('Head', 'leaf', c.H(0, -0.45, 0.95), (0, 0.4, 1), 0.9 * g + 0.25, 0.14, 0.75)
+    y = -1.7
+    while y < 1.4:
+        p = c.body_pt(y, 3.75)
+        k = (0.55 + 0.6 * g) * (1.0 - 0.25 * abs(y + 0.2) / 1.6)
+        m.spike(c.spine_bone(p[1]), 'leaf', (0, p[1], p[2] - 0.25), (0, 0.45, 1), 1.0 * k, 0.14, 0.7 * k)
+        y += 0.45
+    m.box('Tail3', 'leaf', c.tailEnd, (0.35, 0.35, 0.35), bevel=0.1)
+
+
+build(dict(
+    name='Bristleboar',
+    palette={
+        'body': '#8a5a3c', 'belly': '#d9b48a', 'snout': '#e3a08f', 'leaf': '#4f9a3e',
+        'tusk': ('#f4efe2', False), 'foot': '#3a2a22', 'claw': ('#e8e0d0', False),
+        'mouth': '#e48aa2', 'tongue': '#d6405c', 'eye_dark': ('#121419', False),
+        'iris': ('#e8a23a', False), 'eye_glint': ('#ffffff', False),
+    },
+    body=dict(legL=0.8, legT=1.15, bL=0.95, bW=1.08, bH=1.08, girth=1.12, head=1.05, neck=0.6, neckUp=0.5,
+              tail=0.35, tailDroop=1.6),
+    head=head, decor=decor,
+))

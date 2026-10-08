@@ -1,0 +1,188 @@
+"""Frost Penguin - Common Frost Peaks penguin: an upright waddler with flippers, orange beak and
+feet, a red knitted scarf and a tuft of ice crystals. Chicks are fluffy and grey. Waddles when it
+walks and belly-slides when it runs. Faces -Y.
+    blender -b --python penguin.py -- <out_dir> [Child|Teen|Adult] [--live]
+Sockets: Crest (ice tuft sparkle)."""
+import sys, os, math
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from creature import setup, refs, envelope, smooth01, add, TAU
+
+m, st, OUT = setup('FrostPenguin', {
+    'body': '#2b3348', 'belly': '#f7f9ff', 'fluff': '#9aa3b4', 'cheek': '#ffcf4a', 'beak': '#ff9a2e',
+    'foot': ('#ff8a2a', False), 'scarf': '#e2413f', 'scarf2': '#ffffff', 'ice': ('#a6efff', False),
+    'eye_dark': ('#121419', False), 'iris': ('#4aa8ff', False), 'eye_glint': ('#ffffff', False),
+}, {'Child': dict(head=1.35, eye=1.5), 'Teen': dict(head=1.12, eye=1.2)})
+S, E, g, h = st['S'], st['energy'], st['grow'], st['head']
+chick = st['stage'] == 'Child'
+SIDES = (('L', 1), ('R', -1))
+coat = 'fluff' if chick else 'body'
+
+# ---------------- rig ----------------
+m.bone('MonsterRoot', (0, 0, 0), (0, 0, 1))
+m.bone('Hips', (0, 0, 0.6), (0, 0, 2.0), 'MonsterRoot')
+m.bone('Chest', (0, 0, 2.0), (0, 0, 3.1), 'Hips')
+headZ = 3.4 + 0.45 * (h - 1)
+m.bone('Head', (0, 0, 3.1), (0, -0.9, headZ + 0.4), 'Chest')
+m.bone('Tail', (0, 0.9, 0.6), (0, 1.5, 0.35), 'Hips')
+for side, s in SIDES:
+    m.bone(f'Flipper{side}', (1.12 * s, 0, 2.75), (1.55 * s, 0.1, 1.35), 'Chest')
+    m.bone(f'Foot{side}', (0.5 * s, 0, 0.35), (0.5 * s, -0.75, 0.08), 'Hips')
+
+# ---------------- body ----------------
+m.loft(['Hips', 'Chest', 'Head'], coat,
+       [(0, 0.05, 0.3), (0, 0.05, 1.1), (0, 0.0, 2.0), (0, -0.05, 2.85), (0, -0.05, headZ + 0.2)],
+       [(0.75, 0.65), (1.28, 1.12), (1.36, 1.2), (1.08, 0.98), (0.85 * h, 0.82 * h)],
+       sides=10, steps=3, smooth=False, up=(0, -1, 0))
+m.blob(['Hips', 'Chest'], 'belly', (0, -0.45, 1.7), (1.08, 0.85, 1.5), u=12, v=8)
+# head
+m.blob('Head', coat, (0, -0.1, headZ + 0.35), (0.92 * h, 0.88 * h, 0.85 * h), u=12, v=8)
+for side, s in SIDES:
+    m.blob('Head', 'belly', (0.36 * s * h, -0.62 * h, headZ + 0.42), (0.36 * h, 0.25 * h, 0.32 * h), u=8, v=6)
+    if not chick:
+        m.blob('Head', 'cheek', (0.72 * s * h, -0.25 * h, headZ + 0.15), (0.22 * h, 0.32 * h, 0.3 * h), u=8, v=5)
+    m.eye('Head', (0.4 * s * h, -0.82 * h, headZ + 0.5), (0.45 * s, -1, 0.1), 0.22 * h * st['eye'])
+m.spike('Head', 'beak', (0, -0.8 * h, headZ + 0.28), (0, -1, -0.12), 0.85 * h, 0.42 * h, 0.26 * h, snap=False)
+m.spike('Head', 'beak', (0, -0.78 * h, headZ + 0.16), (0, -1, -0.3), 0.5 * h, 0.3 * h, 0.14 * h, snap=False)
+# a tuft of ice crystals on the crown
+for i, (x, k) in enumerate(((0, 1.0), (-0.22, 0.75), (0.22, 0.75))):
+    m.spike('Head', 'ice', (x * h, 0.05, headZ + 0.95 * h), (x * 1.2, 0.35, 1), (0.3 + 0.35 * g) * k * h, 0.2 * h, twist=45)
+m.socket('Crest', 'Head', (0, 0.1, headZ + 1.5 * h))
+
+if chick:
+    # fluffy down poking out everywhere
+    for a in range(10):
+        ang = a * TAU / 10
+        z = 1.1 + 0.8 * (a % 3)
+        m.spike(['Hips', 'Chest'][a % 2], 'fluff', (math.cos(ang) * 1.2, math.sin(ang) * 1.05, z),
+                (math.cos(ang), math.sin(ang), 0.4), 0.35, 0.3, 0.2)
+else:
+    # knitted scarf with stripes and a dangling end
+    ring = []
+    for i in range(13):
+        ang = i * TAU / 12
+        ring.append((math.cos(ang) * 1.0, math.sin(ang) * 0.93 - 0.03, 2.8))
+    m.loft('Chest', 'scarf', ring, [(0.22, 0.2)] * len(ring), sides=6, steps=2, smooth=False, cap_round=0.0)
+    m.box('Chest', 'scarf', (0.55, 0.62, 2.3), (0.4, 0.12, 0.95), rot=(8, 0, -15), bevel=0.06)
+    for z in (2.05, 2.4):
+        m.box('Chest', 'scarf2', (0.55, 0.66, z), (0.42, 0.14, 0.1), rot=(8, 0, -15), bevel=0.0)
+
+# flippers, feet, tail
+for side, s in SIDES:
+    m.loft(f'Flipper{side}', coat, [(1.1 * s, 0, 2.75), (1.42 * s, 0.05, 2.05), (1.58 * s, 0.12, 1.3)],
+           [(0.12, 0.38), (0.11, 0.36), (0.06, 0.12)], sides=6, steps=3, smooth=False, up=(0, -1, 0), cap_round=0.4)
+    m.box(f'Foot{side}', 'foot', (0.5 * s, -0.38, 0.09), (0.62, 0.95, 0.16), bevel=0.06,
+          taper=dict(axis='y', end=-1, scale=(1.25, 0.8)))
+    for dx in (-0.2, 0.0, 0.2):
+        m.spike(f'Foot{side}', 'foot', (0.5 * s + dx, -0.82, 0.08), (dx, -1, 0), 0.18, 0.14, 0.1, snap=False)
+m.spike('Tail', coat, (0, 0.85, 0.65), (0, 1, -0.4), 0.55, 0.55, 0.2)
+
+
+# ---------------- animation ----------------
+WALK = dict(stride=1.25, frames=26)
+RUN = dict(stride=6.0, frames=24)   # belly slide
+
+
+def flap(pose, up, fwd=0.0):
+    for side, s in SIDES:
+        pose[f'Flipper{side}'] = ((fwd, -up * s, 0), (0, 0, 0))
+
+
+def feet(pose, t_, stride, lift, roll_side_lift=True):
+    for (side, s), ph in zip(SIDES, (0.0, 0.5)):
+        u = (t_ + ph) % 1.0
+        if u < 0.5:   # planted, sliding back as the body waddles forward
+            dy = stride / 2 - stride * (u / 0.5)
+            dz, tilt = 0.0, 0.0
+        else:
+            q = (u - 0.5) / 0.5
+            dy = -stride / 2 + stride * smooth01(q)
+            dz = lift * math.sin(math.pi * q)
+            tilt = -18 * math.sin(math.pi * q)
+        pose[f'Foot{side}'] = ((tilt, 0, 0), (0, -dy * S, dz * S))
+
+
+def idle(t_):
+    p = TAU * t_
+    pose = {
+        'Hips': ((0, 3 * E * math.sin(p), 0), (0, 0, 0.03 * S * math.sin(2 * p))),
+        'Chest': ((1.5 * math.sin(p), 0, 0), (0, 0, 0)),
+        'Head': ((4 * math.sin(p + 0.5), 0, 14 * E * math.sin(p * 0.5 + 1) * envelope(t_, 0.2, 0.8)), (0, 0, 0)),
+        'Tail': ((0, 0, 12 * math.sin(2 * p)), (0, 0, 0)),
+    }
+    flap(pose, 6 + 5 * math.sin(2 * p))
+    return pose
+
+
+def walk(t_):
+    p = TAU * t_
+    roll = 11 * E * math.sin(p)
+    pose = {
+        'Hips': ((0, roll, 0), (0, 0, 0.1 * S * abs(math.sin(p)))),
+        'Chest': ((-3, -roll * 0.35, 4 * math.sin(p)), (0, 0, 0)),
+        'Head': ((2 * math.sin(2 * p), -roll * 0.3, -3 * math.sin(p)), (0, 0, 0)),
+        'Tail': ((0, 0, 18 * math.sin(p + 0.8)), (0, 0, 0)),
+    }
+    flap(pose, 22 + 10 * math.sin(2 * p))
+    feet(pose, t_, WALK['stride'], 0.25)
+    return pose
+
+
+def run(t_):
+    # belly slide: tipped forward onto the belly, flippers back, feet trailing, a little wobble
+    p = TAU * t_
+    pose = {
+        'MonsterRoot': ((0, 0, 0), (0, 0, -0.35 * S)),
+        'Hips': ((78, 2 * math.sin(p), 0), (0, 0, 1.05 * S + 0.04 * S * math.sin(2 * p))),
+        'Chest': ((-4, 0, 3 * math.sin(p)), (0, 0, 0)),
+        'Head': ((-50, 0, 4 * math.sin(p)), (0, 0, 0)),
+        'Tail': ((10, 0, 0), (0, 0, 0)),
+    }
+    flap(pose, -10 + 6 * math.sin(2 * p), fwd=45)
+    for side, s in SIDES:
+        pose[f'Foot{side}'] = ((-60 + 10 * math.sin(p + s), 0, 0), (0, 0, 0))
+    return pose
+
+
+def happy(t_):
+    hop = math.sin(math.pi * smooth01(t_ / 0.5)) if t_ < 0.5 else 0.0
+    settle = envelope(t_, 0.1, 0.6, 1.0)
+    pose = {
+        'MonsterRoot': ((0, 0, 0), (0, 0, 0.7 * S * E * hop)),
+        'Chest': ((-6 * settle, 0, 0), (0, 0, 0)),
+        'Head': ((-14 * settle, 0, 10 * math.sin(TAU * 2 * t_) * settle), (0, 0, 0)),
+        'Tail': ((0, 0, 25 * math.sin(TAU * 4 * t_) * settle), (0, 0, 0)),
+    }
+    flap(pose, 20 + 55 * settle * (0.5 + 0.5 * math.sin(TAU * 4 * t_)))
+    return pose
+
+
+def sleep(t_):
+    p = TAU * t_
+    pose = {
+        'Hips': ((0, 0, 0), (0, 0, -0.1 * S + 0.03 * S * math.sin(p))),
+        'Chest': ((6 + 1.5 * math.sin(p), 0, 0), (0, 0, 0)),
+        'Head': ((28, 0, 25), (0, 0, 0)),   # beak tucked into the shoulder
+    }
+    flap(pose, 0)
+    return pose
+
+
+def roar(t_):
+    e = envelope(t_, 0.2, 0.75)
+    pose = {
+        'Chest': ((-12 * e, 0, 0), (0, 0, 0)),
+        'Head': ((-30 * e, 0, 6 * math.sin(TAU * 8 * t_) * e), (0, 0, 0)),
+    }
+    flap(pose, 70 * e + 15 * math.sin(TAU * 6 * t_) * e)
+    return pose
+
+
+m.anim('Idle', 72, True, idle, key_step=3)
+m.anim('Walk', WALK['frames'], True, walk, key_step=2)
+m.anim('Run', RUN['frames'], True, run, key_step=2)
+m.anim('Sleep', 96, True, sleep, key_step=8)
+m.anim('Roar', 48, False, roar, key_step=3)
+m.anim('Attack', 30, False, roar, key_step=3)
+m.anim('Happy', 36, False, happy, key_step=2)
+m.refs = refs({'Walk': WALK, 'Run': RUN}, S)
+m.build(OUT)

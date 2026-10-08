@@ -1,0 +1,102 @@
+"""Qilin - Epic Mythic qilin: a graceful dragon-deer with a jade hide covered in gold-rimmed scale
+plates, a dragon face with long flowing whiskers, branching golden antlers, a mane of blue-white
+spirit flame running down the neck and spine, cloud puffs around its hooves and a flame-tipped
+tail. Faces -Y.
+Sockets: Flame1-5 (mane spirit flames), Cloud* (hoof clouds), TailFlame, Antler{L,R} (glints)."""
+import sys, os, math
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from quadruped import build, TAU
+from kit import envelope
+
+
+def norm(v):
+    l = math.sqrt(sum(x * x for x in v))
+    return tuple(x / l for x in v)
+
+
+def head(c):
+    m, H, h, g = c.m, c.H, c.h, c.grow
+    # dragon face: long muzzle, flared nose, brow plates
+    m.box('Head', 'body', H(0, -0.8, 0.1), (1.4 * h, 1.7 * h, 1.2 * h), bevel=0.32 * h, segs=1)
+    m.box('Head', 'body', H(0, -1.85, -0.05), (0.95 * h, 1.3 * h, 0.75 * h), bevel=0.2 * h, segs=1,
+          taper=dict(axis='y', end=-1, scale=(0.85, 0.75)))
+    m.box('Head', 'gold', H(0, -1.15, 0.62), (1.2 * h, 0.7 * h, 0.15 * h), rot=(-10, 0, 0), bevel=0.05 * h)
+    m.box('Head', 'mouth', H(0, -1.7, -0.4), (0.85 * h, 1.4 * h, 0.1 * h), bevel=0.0)
+    m.box('Jaw', 'belly', H(0, -1.6, -0.55), (0.9 * h, 1.5 * h, 0.25 * h), bevel=0.07 * h, taper=dict(axis='y', end=-1, scale=(0.7, 0.8)))
+    for side, s in c.SIDES:
+        m.blob('Head', 'gold', H(0.3 * s, -2.45, 0.12), (0.18 * h, 0.12 * h, 0.14 * h), u=8, v=5)   # nostrils
+        m.eye('Head', H(0.68 * s, -1.0, 0.3), (0.85 * s, -0.5, 0.2), 0.25 * h * c.eye)
+        # long flowing whiskers from the muzzle
+        base = H(0.4 * s, -2.2, -0.1)
+        m.loft('Head', 'gold', [base, c.add(base, (0.7 * s * h, 0.3 * h, -0.25 * h)), c.add(base, (1.2 * s * h, 0.9 * h, -0.6 * h)),
+                                c.add(base, (1.4 * s * h, 1.6 * h, -0.5 * h))],
+               [(0.07 * h, 0.07 * h), (0.06 * h, 0.06 * h), (0.05 * h, 0.05 * h), (0.02 * h, 0.02 * h)], sides=5, steps=3, smooth=True)
+        # branching golden antlers
+        abase = H(0.38 * s, -0.4, 0.62)
+        beam = norm((0.35 * s, 0.6, 1.0))
+        L = (0.5 + 1.8 * g) * h
+        m.spike('Head', 'antler', abase, beam, L, 0.24 * h, twist=45, snap=False)
+        tip = tuple(b + d * L for b, d in zip(abase, beam))
+        if g > 0.3:
+            for at, d, k in ((0.4, (0.6 * s, -0.4, 0.7), 0.45), (0.7, (0.2 * s, 0.7, 0.8), 0.4)):
+                tb = tuple(b + dd * L * at for b, dd in zip(abase, beam))
+                m.spike('Head', 'antler', tb, norm(d), L * k, 0.16 * h, twist=45, snap=False)
+        m.socket(f'Antler{side}', 'Head', tip)
+    # little beard of flame
+    m.spike('Jaw', 'flame', H(0, -1.2, -0.75), (0, 0.4, -1), 0.6 * h, 0.35 * h, 0.15 * h)
+
+
+def decor(c):
+    m, g = c.m, c.grow
+    # gold-rimmed scale plates over the back and flanks
+    for i, ya in enumerate((-1.3, -0.75, -0.2, 0.35, 0.9)):
+        for x, za in ((-0.7, 3.4), (0.0, 3.7), (0.7, 3.4)):
+            p = c.body_pt(ya, za)
+            bone = c.spine_bone(p[1])
+            xx = x * c.bW
+            tilt = -x * 35
+            m.box(bone, 'gold', (xx, p[1], p[2] - 0.12), (0.62, 0.55, 0.12), rot=(14, tilt, 0), bevel=0.05)
+            m.box(bone, 'scale', (xx * 1.02, p[1] - 0.04, p[2] - 0.06), (0.48, 0.42, 0.1), rot=(14, tilt, 0), bevel=0.04)
+    # spirit-flame mane down the neck and spine
+    pts = [c.add(c.hp, (0, 0.35, 0.55))]
+    for t in (0.35, 0.7):
+        pts.append(tuple(a + (b - a) * t for a, b in zip(c.hp, c.neckStart)))
+    pts += [c.body_pt(ya, 3.95) for ya in (-1.4, -0.6, 0.2, 1.0)]
+    for i, p in enumerate(pts):
+        bone = 'Head' if i == 0 else 'Neck' if i < 3 else c.spine_bone(p[1])
+        k = (0.7 + 0.5 * g) * (1.1 - 0.08 * i)
+        base = (p[0], p[1], p[2] + (0.15 if i < 3 else 0.0))
+        m.spike(bone, 'flame', base, (0, 0.7, 1), 1.0 * k, 0.45, 0.2)
+        m.spike(bone, 'flame2', (base[0], base[1] + 0.15, base[2]), (0, 0.9, 0.8), 0.7 * k, 0.3, 0.14)
+        if i % 2 == 0 and i // 2 < 5:
+            m.socket(f'Flame{i // 2 + 1}', bone, (base[0], base[1] + 0.3, base[2] + 0.8 * k))
+    # cloud puffs round each hoof
+    k_ = 0
+    for side, s in c.SIDES:
+        for end, y in (('F', c.yF), ('B', c.yB)):
+            x = (1.15 if end == 'F' else 1.2) * c.bW * s
+            fy = y - (0.25 if end == 'F' else 0.4) * c.T
+            for j, (dx, dy) in enumerate(((0.45, 0.0), (-0.45, 0.1), (0.0, -0.5), (0.1, 0.45))):
+                m.blob(f'Foot{end}{side}', 'cloud', (x + dx * c.T, fy + dy * c.T, 0.35 * c.T), (0.38, 0.38, 0.26), u=8, v=5)
+            k_ += 1
+            m.socket(f'Cloud{k_}', f'Foot{end}{side}', (x, fy, 0.4 * c.T))
+    # flame-tipped tail
+    m.spike('Tail3', 'flame', c.tailEnd, (0, 0.8, 0.6), 1.0 * (0.6 + 0.4 * g), 0.5, 0.2)
+    m.spike('Tail3', 'flame2', c.tailEnd, (0.3, 0.8, 0.8), 0.7 * (0.6 + 0.4 * g), 0.35, 0.15)
+    m.socket('TailFlame', 'Tail3', c.add(c.tailEnd, (0, 0.5, 0.5)))
+
+
+build(dict(
+    name='Qilin',
+    palette={
+        'body': '#2f9a7a', 'belly': '#e8f0d0', 'scale': '#4fc29a', 'gold': ('#ffcf3a', False), 'antler': ('#ffd86a', False),
+        'flame': ('#7fe0ff', False), 'flame2': ('#e8faff', False), 'cloud': ('#f6fbff', False),
+        'foot': '#1e5a48', 'claw': ('#ffd86a', False), 'mouth': '#c97b8a', 'tongue': '#d6405c',
+        'eye_dark': ('#121419', False), 'iris': ('#ffcf3a', False), 'eye_glint': ('#ffffff', False),
+    },
+    body=dict(legL=1.55, legT=0.72, bL=1.0, bW=0.8, bH=0.88, girth=0.92, head=0.88, neck=1.8, neckUp=2.3,
+              tail=1.0, tailDroop=0.6, eye=1.0),
+    neckRadius=0.78,
+    gait=dict(stride=1.3),
+    head=head, decor=decor,
+))

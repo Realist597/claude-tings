@@ -1,0 +1,81 @@
+"""Bone Jackal - Uncommon Underworld skeleton jackal: a thin spine with a see-through ribcage, a row of
+vertebra spikes down the back, a long horned jackal skull with ghost-green eye fires, bony legs, and
+tufts of green spirit flame for fur along the neck, shoulders and tail. Faces -Y.
+Sockets: EyeFire{L,R}, Spirit1-4 (flame fur), TailFire."""
+import sys, os, math
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from quadruped import build, TAU
+
+
+def head(c):
+    m, H, h, g = c.m, c.H, c.h, c.grow
+    # jackal skull: domed cranium, long narrow snout, dark sockets with green fire
+    m.box('Head', 'bone', H(0, -0.65, 0.15), (1.3 * h, 1.4 * h, 1.15 * h), bevel=0.35 * h, segs=1)
+    m.box('Head', 'bone', H(0, -1.75, -0.12), (0.62 * h, 1.4 * h, 0.5 * h), bevel=0.14 * h, segs=1,
+          taper=dict(axis='y', end=-1, scale=(0.7, 0.75)))
+    m.box('Jaw', 'bone2', H(0, -1.6, -0.48), (0.55 * h, 1.35 * h, 0.18 * h), bevel=0.05 * h, taper=dict(axis='y', end=-1, scale=(0.7, 0.8)))
+    m.box('Head', 'dark', H(0, -2.38, 0.05), (0.2 * h, 0.06 * h, 0.14 * h), bevel=0.0)
+    for side, s in c.SIDES:
+        m.blob('Head', 'dark', H(0.42 * s, -0.95, 0.3), (0.22 * h, 0.2 * h, 0.2 * h), u=8, v=5)
+        m.blob('Head', 'ghost', H(0.47 * s, -1.0, 0.3), (0.1 * h, 0.08 * h, 0.1 * h), u=6, v=4)
+        m.socket(f'EyeFire{side}', 'Head', H(0.5 * s, -1.05, 0.32))
+        for k in range(4):
+            m.spike('Head', 'tooth', H(0.22 * s, -2.2 + 0.3 * k, -0.35), (0, 0, -1), 0.18 * h, 0.07 * h, snap=False)
+        # tall jackal ears (bony) and ram horns curling back
+        m.spike('Head', 'bone2', H(0.42 * s, -0.25, 0.55), (0.3 * s, 0.25, 1), (0.85 + 0.4 * g) * h, 0.5 * h, 0.14 * h)
+        prev = H(0.5 * s, -0.55, 0.55)
+        for j in range(4):
+            a = j * 0.9
+            d = (0.45 * s, math.cos(a), -math.sin(a) + 0.4)
+            seg = (0.35 - 0.05 * j) * h * (0.5 + 0.5 * g)
+            m.spike('Head', 'horn', prev, d, seg * 1.7, (0.24 - 0.04 * j) * h, snap=False)
+            prev = (prev[0] + d[0] * seg, prev[1] + d[1] * seg, prev[2] + d[2] * seg)
+
+
+def decor(c):
+    m, g = c.m, c.grow
+    # ribcage: hoops round the chest from the spine down to a sternum
+    for i, ya in enumerate((-1.25, -0.9, -0.55, -0.2, 0.15, 0.5)):
+        p = c.body_pt(ya, 2.45)
+        r_w = 1.15 * c.bW * (1 - 0.06 * abs(i - 2))
+        r_h = 1.05 * c.bH * (1 - 0.06 * abs(i - 2))
+        for side, s in c.SIDES:
+            pts = [(s * r_w * math.sin(a), p[1] + 0.05 * math.sin(a * 2), p[2] + r_h * math.cos(a)) for a in [k * 0.4 for k in range(8)]]
+            m.loft(c.spine_bone(p[1]), 'bone', pts, [(0.09, 0.09)] * len(pts), sides=4, steps=2, smooth=False)
+    sternum = [c.body_pt(ya, 2.45 - 1.05) for ya in (-1.3, -0.4, 0.5)]
+    m.loft(['Chest', 'Hips'], 'bone2', sternum, [(0.14, 0.1)] * 3, sides=5, steps=2, smooth=False)
+    # pelvis
+    p = c.body_pt(1.2, 2.45)
+    m.box('Hips', 'bone2', p, (1.5 * c.bW, 0.6, 0.55), bevel=0.15)
+    # vertebra spikes all along the spine
+    for ya in (-1.4, -1.0, -0.6, -0.2, 0.2, 0.6, 1.0, 1.4):
+        p = c.body_pt(ya, 3.05)
+        m.spike(c.spine_bone(p[1]), 'bone2', (0, p[1], p[2]), (0, 0.4, 1), 0.55 * (0.6 + 0.4 * g), 0.22, snap=False)
+    # green spirit flame fur
+    k = 0
+    for bone, pt, d in (('Neck', c.add(c.neckStart, (0, -0.3, 0.6)), (0, 0.6, 1)), ('Chest', c.body_pt(-1.0, 3.2), (0, 0.6, 1)),
+                        ('Chest', c.add(c.body_pt(-1.1, 2.5), (1.0 * c.bW, 0, 0)), (1, 0.4, 0.6)),
+                        ('Chest', c.add(c.body_pt(-1.1, 2.5), (-1.0 * c.bW, 0, 0)), (-1, 0.4, 0.6))):
+        m.spike(bone, 'ghost', pt, d, 0.9 * (0.6 + 0.4 * g), 0.45, 0.2)
+        m.spike(bone, 'ghost2', pt, (d[0] * 0.6 + 0.2, d[1], d[2]), 0.6 * (0.6 + 0.4 * g), 0.3, 0.14)
+        k += 1
+        m.socket(f'Spirit{k}', bone, pt)
+    m.spike('Tail3', 'ghost', c.tailEnd, (0, 0.7, 0.6), 0.8, 0.4, 0.2)
+    m.socket('TailFire', 'Tail3', c.add(c.tailEnd, (0, 0.3, 0.4)))
+
+
+build(dict(
+    name='BoneJackal',
+    palette={
+        'body': '#d8ccb4', 'bone': '#e8dcc4', 'bone2': '#c8b89a', 'belly': '#c8b89a', 'dark': ('#120d10', False),
+        'horn': ('#4a3a32', False), 'tooth': ('#f6f0e2', False), 'ghost': ('#5dff9a', False), 'ghost2': ('#c8ffd8', False),
+        'foot': '#b8a88a', 'claw': ('#2a2224', False), 'mouth': '#2a1a1e', 'tongue': '#5a2a30',
+        'eye_dark': ('#121419', False), 'iris': ('#5dff9a', False), 'eye_glint': ('#ffffff', False),
+    },
+    body=dict(legL=1.25, legT=0.62, bL=0.95, bW=0.75, bH=0.8, girth=0.45, head=0.92, neck=1.2, neckUp=1.6,
+              tail=0.9, tailDroop=0.9, eye=1.0),
+    belly=False,
+    neckRadius=0.5,
+    gait=dict(stride=1.25),
+    head=head, decor=decor,
+))

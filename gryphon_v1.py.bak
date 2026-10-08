@@ -1,0 +1,119 @@
+"""Gryphon - Uncommon Mythic gryphon: a white eagle's head with a hooked golden beak and swept feather
+crest on a tawny lion body, a white feather ruff, a gold armour collar with a gem, big feathered
+wings (with primaries along the tips), scaled yellow forelegs with black talons and a tufted lion
+tail. Faces -Y. Wings: Wing/WingTip bones per side.
+Sockets: WingTipL/R + WingTrailL/R (flap trails), Gem."""
+import sys, os, math
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from quadruped import build, TAU
+from kit import envelope
+
+
+def bones(c):
+    m, bW, bL, bH, g = c.m, c.bW, c.bL, c.bH, c.grow
+    span = 0.55 + 0.45 * g
+    for side, s in c.SIDES:
+        sh = (0.75 * bW * s, -0.65 * bL, c.bodyZ + 1.0 * bH)
+        el = (sh[0] + 1.8 * span * s, sh[1] + 0.6, sh[2] + 1.5 * span)
+        tip = (el[0] + 2.0 * span * s, el[1] + 1.4, el[2] + 0.2 * span)
+        m.bone(f'Wing{side}', sh, el, 'Chest')
+        m.bone(f'WingTip{side}', el, tip, f'Wing{side}')
+        c.__dict__[f'wing{side}'] = (sh, el, tip)
+
+
+def head(c):
+    m, H, h, g = c.m, c.H, c.h, c.grow
+    m.box('Head', 'feather', H(0, -0.8, 0.15), (1.45 * h, 1.7 * h, 1.4 * h), bevel=0.45 * h, segs=1)
+    # hooked golden beak
+    m.box('Head', 'beak', H(0, -1.75, -0.05), (0.6 * h, 0.9 * h, 0.7 * h), bevel=0.15 * h, taper=dict(axis='y', end=-1, scale=(0.6, 0.7)))
+    m.spike('Head', 'beak', H(0, -2.15, 0.15), (0, -0.55, -1), 0.65 * h, 0.4 * h, 0.3 * h, snap=False)
+    m.box('Jaw', 'beak', H(0, -1.6, -0.45), (0.5 * h, 0.85 * h, 0.2 * h), bevel=0.06 * h, taper=dict(axis='y', end=-1, scale=(0.6, 0.8)))
+    for side, s in c.SIDES:
+        m.eye('Head', H(0.74 * s, -1.0, 0.35), (0.85 * s, -0.5, 0.15), 0.26 * h * c.eye)
+        m.box('Head', 'brow', H(0.62 * s, -1.05, 0.72), (0.4 * h, 0.5 * h, 0.12 * h), rot=(10, 0, -15 * s), bevel=0.04 * h)
+        # swept feather crest
+        for k in range(3):
+            m.spike('Head', 'feather2' if k % 2 else 'feather', H(0.25 * s, -0.3 + 0.15 * k, 0.75 - 0.15 * k),
+                    (0.35 * s, 1.0, 0.5 - 0.2 * k), (0.6 + 0.5 * g) * h * (1 - 0.15 * k), 0.3 * h, 0.08 * h)
+
+
+def decor(c):
+    m, g = c.m, c.grow
+    # white feather ruff where the eagle meets the lion
+    for i in range(10):
+        a = math.pi * (i / 9)
+        x = math.cos(a) * 1.1 * c.bW
+        z = c.neckStart[2] - 0.2 + math.sin(a) * 0.9
+        m.spike('Neck', 'feather', (x, c.neckStart[1] + 0.2, z), (x * 0.4, 0.8, math.sin(a) * 0.6 - 0.4), 0.8 * (0.6 + 0.4 * g), 0.45, 0.1)
+    # gold armour collar with a red gem
+    nc = c.add(c.neckStart, (0, 0.05, -0.05))
+    ring = [(math.cos(TAU * i / 16) * 1.05 * c.bW, nc[1], nc[2] + math.sin(TAU * i / 16) * 0.95 * c.bH) for i in range(17)]
+    m.loft('Chest', 'gold', ring, [(0.14, 0.2)] * len(ring), sides=6, steps=1, smooth=False, cap_round=0.0)
+    m.blob('Chest', 'gem', (0, nc[1] - 0.2, nc[2] - 0.95 * c.bH), (0.2, 0.12, 0.24), u=8, v=5)
+    m.socket('Gem', 'Chest', (0, nc[1] - 0.3, nc[2] - 0.95 * c.bH))
+    # tufted lion tail
+    m.blob('Tail3', 'tuft', c.tailEnd, (0.4, 0.55, 0.4), u=8, v=6)
+    for d in ((0, 1, 0.3), (0.5, 0.9, 0), (-0.5, 0.9, 0)):
+        m.spike('Tail3', 'tuft', c.tailEnd, d, 0.5, 0.3, 0.15)
+    # feathered wings: a panel of coverts plus long primaries fanning off the tip
+    span = 0.55 + 0.45 * g
+    for side, s in c.SIDES:
+        sh, el, tip = c.__dict__[f'wing{side}']
+        bones_ = [f'Wing{side}', f'WingTip{side}']
+        lead, trail = [], []
+        n = 12
+        for i in range(n):
+            u = i / (n - 1)
+            a, b, f = (sh, el, u / 0.45) if u <= 0.45 else (el, tip, (u - 0.45) / 0.55)
+            p = tuple(x + (y - x) * f for x, y in zip(a, b))
+            lead.append(p)
+            chord = (2.2 * (1 - u) ** 0.6 + 0.4) * span
+            trail.append((p[0] + 0.1 * s * chord, p[1] + chord, p[2] - 0.45 * chord))
+        m.strip(bones_, 'feather', lead, trail, thickness=0.14)
+        m.strip(bones_, 'feather2', [lead[i] for i in range(n)], [tuple(a + (b - a) * 0.45 for a, b in zip(lead[i], trail[i])) for i in range(n)], thickness=0.18)
+        m.loft(bones_, 'feather2', [sh, el, tip], [(0.2, 0.2), (0.15, 0.15), (0.07, 0.07)], sides=6, steps=3, smooth=False)
+        for k, u in enumerate((0.55, 0.65, 0.75, 0.85, 0.95)):
+            i = min(n - 1, int(u * (n - 1)))
+            d = (0.25 * s, 1.0, -0.35 - 0.1 * k)
+            m.spike(bones_[1], 'feather' if k % 2 else 'feather3', trail[i], d, (0.9 + 0.2 * k) * span, 0.35, 0.06, snap=False)
+        m.socket(f'WingTip{side}', bones_[1], tip)
+        m.socket(f'WingTrail{side}', bones_[1], trail[-2])
+        m.blob(['Chest', bones_[0]], 'body', sh, (0.42, 0.42, 0.4), u=8, v=5)
+
+
+def pose(c, clip, t, p):
+    if clip == 'Idle':
+        up, fold, tipf = 6 * math.sin(TAU * t), 22, 4 * math.sin(TAU * t - 0.6)
+    elif clip == 'Walk':
+        up, fold, tipf = -4 + 4 * math.sin(TAU * 2 * t), 30, 8
+    elif clip == 'Run':
+        up, fold, tipf = 36 * math.sin(TAU * t), 0, 22 * math.sin(TAU * t - 0.9)
+    elif clip == 'Sleep':
+        up, fold, tipf = -30, 45, 35
+    elif clip == 'Roar':
+        e = envelope(t, 0.2, 0.75)
+        up, fold, tipf = 45 * e + 5 * math.sin(TAU * 6 * t) * e, -15 * e, -10 * e
+    elif clip == 'Attack':
+        w = envelope(t, 0.3, 0.5, 0.9)
+        up, fold, tipf = 30 * w, -10 * w, -12 * w
+    else:
+        up, fold, tipf = 30 * math.sin(TAU * 3 * t) * envelope(t, 0.1, 0.7), 0, 15 * math.sin(TAU * 3 * t - 0.8)
+    for side, s in c.SIDES:
+        p[f'Wing{side}'] = ((0, -up * s, fold * s), (0, 0, 0))
+        p[f'WingTip{side}'] = ((0, -tipf * s, fold * 0.6 * s), (0, 0, 0))
+
+
+build(dict(
+    name='Gryphon',
+    palette={
+        'body': '#c8955a', 'belly': '#e8cfa0', 'feather': '#f7f4ec', 'feather2': '#8a5a34', 'feather3': '#3a2a22',
+        'beak': ('#ffc23a', False), 'brow': '#e6e0d4', 'gold': ('#ffcf3a', False), 'gem': ('#e0302a', False),
+        'tuft': '#6a4024', 'foot': '#ffc23a', 'claw': ('#1e1a1a', False), 'mouth': '#c97b8a', 'tongue': '#d6405c',
+        'eye_dark': ('#121419', False), 'iris': ('#ff9a2a', False), 'eye_glint': ('#ffffff', False),
+    },
+    body=dict(legL=1.1, legT=0.95, bL=1.05, bW=0.9, bH=0.92, girth=0.98, head=0.9, neck=1.1, neckUp=1.8,
+              tail=1.1, tailDroop=1.1, eye=1.0),
+    neckRadius=0.85,
+    gait=dict(stride=1.2),
+    bones=bones, head=head, decor=decor, pose=pose,
+))

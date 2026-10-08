@@ -1,0 +1,219 @@
+"""Lava Toad - Common Underworld toad (hopping body plan shared with the Snow Hare's rig): a squat body
+armoured in dark volcanic crust plates with molten magma glowing through the cracks, huge bulging
+eyes on stalks that bounce as it hops, a wide glowing grin, a glowing throat sac and little smoking
+vents on its back. Faces -Y.
+    blender -b --python toad.py -- <out_dir> [Child|Teen|Adult] [--live]
+Sockets: Vent1/Vent2 (smoke + embers), Throat (glow pulse)."""
+import sys, os, math
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from creature import setup, ik, refs, envelope, smooth01, add, TAU
+
+m, st, OUT = setup('LavaToad', {
+    'magma': ('#ff6a1a', False), 'magma2': ('#ffc43a', False), 'crust': '#3a2c2c', 'crust2': '#4f3b36', 'belly': '#8a4a2a',
+    'pad': '#2a1e1e', 'claw': ('#1a1414', False), 'eye_dark': ('#120709', False), 'iris': ('#ffb02a', False),
+    'eye_glint': ('#ffe9b0', False),
+}, {'Child': dict(head=1.3, eye=1.3), 'Teen': dict(head=1.1, eye=1.12)})
+S, E, g, h = st['S'], st['energy'], st['grow'], st['head']
+SIDES = (('L', 1), ('R', -1))
+HEAD = (0, -1.45, 1.65)
+
+
+def Hd(x, y, z):
+    """head-relative point, scaled by the stage's head size"""
+    return (HEAD[0] + x * h, HEAD[1] + y * h, HEAD[2] + z * h)
+
+
+# ---------------- rig ----------------
+m.bone('MonsterRoot', (0, 0.3, 0), (0, 0.3, 1))
+m.bone('Hips', (0, 0.8, 1.4), (0, -0.5, 1.6), 'MonsterRoot')
+m.bone('Chest', (0, -0.5, 1.6), (0, -1.1, 2.05), 'Hips')
+m.bone('Head', (0, -1.1, 2.05), Hd(0, -0.8, 0.1), 'Chest')
+m.bone('Tail', (0, 1.45, 1.5), (0, 1.85, 1.65), 'Hips')
+for side, s in SIDES:
+    m.bone(f'Ear{side}', Hd(0.3 * s, 0.15, 0.55), Hd(0.48 * s, 0.55, 2.1 + 0.4 * g), 'Head')
+    x = 0.66 * s
+    m.bone(f'Thigh{side}', (x, 0.75, 1.2), (x, 0.0, 0.72), 'Hips')
+    m.bone(f'Shin{side}', (x, 0.0, 0.72), (x, 0.95, 0.3), f'Thigh{side}')
+    m.bone(f'Foot{side}', (x, 0.95, 0.3), (x, -0.25, 0.07), f'Shin{side}')
+    x = 0.45 * s
+    m.bone(f'UpperF{side}', (x, -0.75, 1.15), (x, -0.68, 0.62), 'Chest')
+    m.bone(f'LowerF{side}', (x, -0.68, 0.62), (x, -0.8, 0.16), f'UpperF{side}')
+    m.bone(f'FootF{side}', (x, -0.8, 0.16), (x, -1.1, 0.05), f'LowerF{side}')
+
+# ---------------- body ----------------
+# molten core (shows through the cracks) wrapped in crust plates
+m.loft(['Tail', 'Hips', 'Chest', 'Head'], 'magma',
+       [(0, 1.45, 1.2), (0, 0.8, 1.3), (0, 0.0, 1.35), (0, -0.7, 1.4), (0, -1.1, 1.5), Hd(0, -0.2, 0)],
+       [(0.45, 0.4), (1.3, 0.92), (1.5, 1.02), (1.42, 0.98), (1.2, 0.84), (1.05 * h, 0.75 * h)], sides=10, steps=3, smooth=False)
+m.blob(['Hips', 'Chest'], 'belly', (0, -0.1, 0.62), (1.25, 1.5, 0.42), u=10, v=6)
+plates = [(-0.9, 0.0, 2.3), (-0.3, -0.75, 2.15), (-0.3, 0.75, 2.15), (0.35, 0.0, 2.35), (0.4, -0.95, 1.95), (0.4, 0.95, 1.95),
+          (1.0, -0.5, 2.05), (1.0, 0.5, 2.05), (-0.95, -0.95, 1.85), (-0.95, 0.95, 1.85), (0.0, -1.35, 1.55), (0.0, 1.35, 1.55)]
+for i, (y, x, z) in enumerate(plates):
+    bone = 'Chest' if y < -0.4 else 'Hips'
+    m.blob(bone, 'crust' if i % 2 else 'crust2', (x, y, z), (0.48, 0.46, 0.2), rot=(0, -x * 40, 0), u=6, v=4)
+# smoking vents on the back
+for k, (x, y) in enumerate(((0.45, 0.2), (-0.35, 0.7))):
+    m.loft('Hips', 'crust2', [(x, y, 2.2), (x, y, 2.55)], [(0.24, 0.24), (0.12, 0.12)], sides=6, steps=1, smooth=False)
+    m.blob('Hips', 'magma2', (x, y, 2.57), (0.1, 0.1, 0.05), u=6, v=4)
+    m.socket(f'Vent{k + 1}', 'Hips', (x, y, 2.75))
+# head: wide flat skull, crust brow, glowing grin and throat sac
+m.blob('Head', 'crust', Hd(0, -0.2, 0.15), (1.05 * h, 0.95 * h, 0.55 * h), u=12, v=7)
+m.loft('Head', 'magma2', [Hd(-0.95, -0.3, -0.25), Hd(-0.5, -0.95, -0.35), Hd(0, -1.08, -0.35), Hd(0.5, -0.95, -0.35), Hd(0.95, -0.3, -0.25)],
+       [(0.07 * h, 0.07 * h)] * 5, sides=5, steps=3, smooth=False)
+m.blob('Head', 'magma', Hd(0, -0.55, -0.62), (0.6 * h, 0.5 * h, 0.38 * h), u=10, v=6)
+m.socket('Throat', 'Head', Hd(0, -0.7, -0.75))
+for side, s in SIDES:
+    # big bulging eyes on stalks (the Ear bones), they bounce with each hop
+    base, top = Hd(0.45 * s, 0.05, 0.45), Hd(0.55 * s, 0.15, 0.95 + 0.15 * g)
+    m.loft(f'Ear{side}', 'crust2', [base, top], [(0.3 * h, 0.3 * h), (0.22 * h, 0.22 * h)], sides=7, steps=1, smooth=False)
+    m.blob(f'Ear{side}', 'crust', top, (0.36 * h, 0.36 * h, 0.34 * h), u=10, v=7)
+    m.eye(f'Ear{side}', add(top, (0.12 * s * h, -0.26 * h, 0.04 * h)), (0.4 * s, -1, 0.2), 0.27 * h * st['eye'])
+
+# hind legs (big folded haunches) and front legs
+for side, s in SIDES:
+    x = 0.66 * s
+    m.blob(f'Thigh{side}', 'crust2', (0.85 * s, 0.55, 1.0), (0.6, 0.95, 0.7), u=10, v=7)
+    m.loft([f'Thigh{side}', f'Shin{side}'], 'crust', [(x * 1.2, 0.7, 1.1), (x * 1.2, 0.05, 0.72), (x * 1.2, 0.92, 0.33)],
+           [(0.45, 0.5), (0.3, 0.3), (0.2, 0.2)], sides=7, steps=2, smooth=False, up=(0, -1, 0))
+    m.box(f'Foot{side}', 'crust', (x * 1.2, 0.38, 0.1), (0.55, 1.2, 0.2), bevel=0.08, taper=dict(axis='y', end=-1, scale=(1.5, 0.8)))
+    for dx in (-0.2, 0.0, 0.2):
+        m.blob(f'Foot{side}', 'magma2', (x * 1.2 + dx, -0.2, 0.08), (0.1, 0.1, 0.06), u=6, v=4)
+    x = 0.55 * s
+    m.loft([f'UpperF{side}', f'LowerF{side}', f'FootF{side}'], 'crust2', [(x, -0.75, 1.2), (x, -0.68, 0.62), (x, -0.8, 0.18)],
+           [(0.26, 0.26), (0.2, 0.2), (0.17, 0.17)], sides=6, steps=2, smooth=False, up=(0, -1, 0))
+    m.box(f'FootF{side}', 'crust', (x, -0.92, 0.07), (0.45, 0.42, 0.14), bevel=0.05)
+m.blob('Tail', 'crust', (0, 1.55, 1.3), (0.3, 0.3, 0.25), u=6, v=4)
+
+
+# ---------------- animation ----------------
+BACK = ('Thigh', 'Shin', 'Foot')
+FRONT = ('UpperF', 'LowerF', 'FootF')
+PIVOT = (0.8 * S, 1.4 * S)   # Hips head
+WALK = dict(stride=1.6, frames=28, hop=0.55)
+RUN = dict(stride=3.4, frames=18, hop=0.9)
+
+
+def curve(u, keys):
+    """smooth piecewise curve through (u, value) keys, wrapping at 1"""
+    keys = keys + [(keys[0][0] + 1, keys[0][1])]
+    for (u0, v0), (u1, v1) in zip(keys, keys[1:]):
+        if u0 <= u < u1:
+            return v0 + (v1 - v0) * smooth01((u - u0) / (u1 - u0))
+    return keys[0][1]
+
+
+def foot_track(u, land, lift, stride, height):
+    """(dy, dz) of a foot that is on the ground from `land` to `lift` (cycle fractions, may wrap)"""
+    contact = (lift - land) % 1.0
+    since = (u - land) % 1.0
+    if since < contact:   # planted: slides back as the body travels forward
+        return -stride * contact / 2 + stride * since, 0.0
+    q = (since - contact) / (1 - contact)
+    return stride * contact / 2 - stride * smooth01(q), height * math.sin(math.pi * q)
+
+
+def hop_pose(t_, gait):
+    u = t_ % 1.0
+    D, hopH = gait['stride'] * S, gait['hop'] * S * E
+    air = 0.32 <= u < 0.72
+    bz = hopH * math.sin(math.pi * (u - 0.32) / 0.4) if air else -0.12 * S * math.sin(math.pi * ((u - 0.72) % 1.0) / 0.6)
+    # nose-up amount through the hop (crouch nose-down, launch nose-up, land nose-down)
+    pitch = -curve(u, [(0.0, -5), (0.22, -12), (0.34, 14), (0.55, 0), (0.7, -14), (0.85, -6)])
+    pose = {
+        'Hips': ((pitch, 0, 0), (0, 0, bz)),
+        'Head': ((-pitch * 0.7 + 3 * math.sin(TAU * u * 2), 0, 0), (0, 0, 0)),
+        'Tail': ((10 * math.sin(TAU * u), 0, 0), (0, 0, 0)),
+    }
+    trail = curve(u, [(0.0, -10), (0.3, -15), (0.45, -45), (0.7, -30), (0.85, -15)])
+    for side, s in SIDES:
+        pose[f'Ear{side}'] = ((trail + 4 * s * math.sin(TAU * u), 0, 6 * s), (0, 0, 0))
+    for chain, land, lift, hgt in ((BACK, 0.8, 0.34, 0.5), (FRONT, 0.7, 0.05, 0.35)):
+        for side, _ in SIDES:
+            names = tuple(f'{b}{side}' for b in chain)
+            dy, dz = foot_track(u, land, lift, D, hgt * S)
+            ay, az = m.rest_ankle(names[1])
+            ik(m, pose, names, (ay + dy, az + dz), shift=(0, bz), pitch=pitch, pivot=PIVOT,
+               tilt=-25 * math.sin(math.pi * max(0.0, dz) / max(hgt * S, 1e-6)))
+    return pose
+
+
+def planted(pose, bz=0.0, pitch=0.0):
+    for chain in (BACK, FRONT):
+        for side, _ in SIDES:
+            names = tuple(f'{b}{side}' for b in chain)
+            ik(m, pose, names, m.rest_ankle(names[1]), shift=(0, bz), pitch=pitch, pivot=PIVOT)
+
+
+def idle(t_):
+    p = TAU * t_
+    twitch = math.sin(TAU * 12 * t_) * envelope(t_, 0.3, 0.45, 0.55)
+    pose = {
+        'Hips': ((0, 0, 0), (0, 0, 0.025 * S * math.sin(p))),
+        'Head': ((3 * math.sin(p) + 3 * twitch, 0, 12 * E * math.sin(p * 0.5) * envelope(t_, 0.6, 0.9)), (0, 0, 0)),
+        'Tail': ((0, 0, 15 * math.sin(3 * p)), (0, 0, 0)),
+    }
+    for side, s in SIDES:
+        pose[f'Ear{side}'] = ((-6 + 8 * math.sin(p + s), 0, 8 * s * math.sin(p * 2 + s)), (0, 0, 0))
+    planted(pose, 0.025 * S * math.sin(p))
+    return pose
+
+
+def happy(t_):
+    # a binky: big jump with a twist
+    hop = math.sin(math.pi * smooth01(t_ / 0.55)) if t_ < 0.55 else 0.0
+    twist = 35 * math.sin(math.pi * smooth01(t_ / 0.55)) if t_ < 0.55 else 0.0
+    pose = {
+        'MonsterRoot': ((0, 0, twist), (0, 0, 1.1 * S * E * hop)),
+        'Head': ((-10 * hop, 0, -twist * 0.5), (0, 0, 0)),
+        'Tail': ((0, 0, 30 * math.sin(TAU * 4 * t_)), (0, 0, 0)),
+    }
+    for side, s in SIDES:
+        pose[f'Ear{side}'] = ((-25 * hop, 0, 15 * s * hop), (0, 0, 0))
+    planted(pose)
+    return pose
+
+
+def sleep(t_):
+    p = TAU * t_
+    drop = -0.55 * S + 0.03 * S * math.sin(p)
+    pose = {
+        'Hips': ((0, 0, 0), (0, 0, drop)),
+        'Head': ((12, 0, 0), (0, 0, 0)),
+    }
+    for side, s in SIDES:
+        pose[f'Ear{side}'] = ((-70, 0, 10 * s), (0, 0, 0))   # ears laid flat along the back
+    for chain in (BACK, FRONT):
+        for side, _ in SIDES:
+            names = tuple(f'{b}{side}' for b in chain)
+            ay, az = m.rest_ankle(names[1])
+            ik(m, pose, names, (ay, max(az + drop * 0.2, 0.05 * S)), shift=(0, drop))
+    return pose
+
+
+def thump(t_):
+    # angry foot thump (roar / attack)
+    e = envelope(t_, 0.15, 0.8)
+    stomp = abs(math.sin(TAU * 3 * t_)) * e
+    pose = {
+        'Hips': ((8 * e, 0, 0), (0, 0, 0.1 * S * e)),
+        'Head': ((-15 * e, 0, 0), (0, 0, 0)),
+    }
+    for side, s in SIDES:
+        pose[f'Ear{side}'] = ((15 * e, 0, -10 * s * e), (0, 0, 0))
+    planted(pose, 0.1 * S * e, 8 * e)
+    for side, _ in SIDES:
+        names = tuple(f'{b}{side}' for b in BACK)
+        ay, az = m.rest_ankle(names[1])
+        ik(m, pose, names, (ay, az + 0.3 * S * stomp), shift=(0, 0.1 * S * e), pitch=8 * e, pivot=PIVOT)
+    return pose
+
+
+m.anim('Idle', 72, True, idle, key_step=2)
+m.anim('Walk', WALK['frames'], True, lambda t_: hop_pose(t_, WALK), key_step=1)
+m.anim('Run', RUN['frames'], True, lambda t_: hop_pose(t_, RUN), key_step=1)
+m.anim('Sleep', 96, True, sleep, key_step=8)
+m.anim('Roar', 48, False, thump, key_step=2)
+m.anim('Attack', 30, False, thump, key_step=2)
+m.anim('Happy', 36, False, happy, key_step=2)
+m.refs = refs({'Walk': WALK, 'Run': RUN}, S)
+m.build(OUT)

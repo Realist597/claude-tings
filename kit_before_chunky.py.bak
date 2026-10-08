@@ -1,0 +1,806 @@
+"""Monster Heist - Blender monster kit.
+
+Builds chunky, low-poly, Roblox-style monsters out of beveled boxes, faceted
+spikes and disc eyes, bakes a dotted "fabric" texture, rigs them with rigid
+bone weights, keys animations and exports FBX + animation JSON for Studio.
+
+Usage from a monster script:
+    m = Monster("Thornhorn")
+    m.color(...); m.bone(...); m.box(...); m.anim(...)
+    m.build(out_dir)
+
+Conventions: Z up, monster faces -Y, ground at Z = 0, 1 Blender unit ~ 1 stud.
+
+Live mode: run Blender with a window (no -b) and pass --live after "--" to watch the build
+step by step: parts appear one at a time, then the texture, the skeleton, and a walk cycle.
+Live mode only shows the build; it doesn't export.
+"""
+import bpy, bmesh, math, json, os, sys
+from contextlib import nullcontext
+import numpy as np
+from mathutils import Vector, Matrix, Quaternion, Euler
+from mathutils.bvhtree import BVHTree
+
+TEX_SIZE = 1024
+DOT_SPACING_WORLD = 0.11   # world units between fabric dots (old 'dots' surface)
+STUD_SPACING_WORLD = 0.24  # world units between Roblox-style studs
+SURFACE = 'studs'          # 'studs' (crisp toy studs, default) or 'dots' (the old soft fabric dots)
+FPS = 30
+
+
+def _view3d_override():
+    """Context for operators when running from a timer in the UI (no-op in background)."""
+    wm = bpy.context.window_manager
+    if bpy.app.background or not wm or not wm.windows:
+        return nullcontext()
+    win = wm.windows[0]
+    for area in win.screen.areas:
+        if area.type == 'VIEW_3D':
+            region = next(r for r in area.regions if r.type == 'WINDOW')
+            return bpy.context.temp_override(window=win, area=area, region=region)
+    return bpy.context.temp_override(window=win)
+
+
+def _view3d_spaces():
+    wm = bpy.context.window_manager
+    if bpy.app.background or not wm:
+        return
+    for win in wm.windows:
+        for area in win.screen.areas:
+            if area.type == 'VIEW_3D':
+                yield win, area
+
+
+def _shading(kind, color_type):
+    for _, area in _view3d_spaces():
+        sh = area.spaces.active.shading
+        sh.type = kind
+        sh.color_type = color_type
+
+
+def _frame_all():
+    for win, area in _view3d_spaces():
+        region = next(r for r in area.regions if r.type == 'WINDOW')
+        with bpy.context.temp_override(window=win, area=area, region=region):
+            bpy.ops.view3d.view_all(center=False)
+
+
+def hexcol(h):
+    h = h.lstrip('#')
+    return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+
+def smooth01(x):
+    x = max(0.0, min(1.0, x))
+    return x * x * (3 - 2 * x)
+
+
+def envelope(t, rise, hold_end, fall_end=1.0):
+    """0 -> 1 over [0, rise], hold until hold_end, back to 0 by fall_end."""
+    if t < rise:
+        return smooth01(t / rise)
+    if t < hold_end:
+        return 1.0
+    return 1.0 - smooth01((t - hold_end) / max(1e-6, fall_end - hold_end))
+
+
+def _rot_matrix(rot_deg):
+    return Euler([math.radians(a) for a in rot_deg], 'XYZ').to_matrix()
+
+
+class Monster:
+    def __init__(self, name):
+        self.name = name
+        self.palette = {}      # key -> (rgb, dots, edges)
+        self.bones = []        # (name, head, tail, parent)
+        self.parts = []        # (bone, color, bmesh-builder, bevel, segs)
+        self.anims = []        # (name, frames, loop, key_step, fn)
+
+    # ---------- definition API ----------
+    def color(self, key, hexv, dots=True, edges=False):
+        """dots: studded surface (False = smooth: eyes, glow, teeth). edges: dark outline drawn round
+        every face of this colour - for plates, petals and scales that should read as separate pieces"""
+        self.palette[key] = (hexcol(hexv), dots, edges)
+
+    def bone(self, name, head, tail, parent=None):
+        self.bones.append((name, Vector(head), Vector(tail), parent))
+
+    def box(self, bone, color, center, size, rot=(0, 0, 0), bevel=0.12, segs=1, taper=None, smooth=False):
+        """taper: dict(axis='y', end=-1, scale=(a, b), offset=(da, db)) scales/offsets
+        the two other axes of the verts on that end of the box (local space)."""
+        def build(bm):
+            res = bmesh.ops.create_cube(bm, size=1.0)
+            verts = res['verts']
+            ax = 'xyz'
+            for v in verts:
+                p = Vector((v.co.x * size[0], v.co.y * size[1], v.co.z * size[2]))
+                if taper:
+                    i = ax.index(taper['axis'])
+                    if (v.co[i] > 0) == (taper['end'] > 0):
+                        o = [j for j in range(3) if j != i]
+                        sc = taper.get('scale', (1, 1))
+                        off = taper.get('offset', (0, 0))
+                        p[o[0]] = p[o[0]] * sc[0] + off[0]
+                        p[o[1]] = p[o[1]] * sc[1] + off[1]
+                v.co = _rot_matrix(rot) @ p + Vector(center)
+        self.parts.append((bone, color, build, bevel, segs, smooth))
+
+    def blob(self, bone, color, center, radii, rot=(0, 0, 0), u=14, v=9, smooth=True):
+        """Low-poly ellipsoid."""
+        def build(bm):
+            res = bmesh.ops.create_uvsphere(bm, u_segments=u, v_segments=v, radius=1.0)
+            for vert in res['verts']:
+                p = Vector((vert.co.x * radii[0], vert.co.y * radii[1], vert.co.z * radii[2]))
+                vert.co = _rot_matrix(rot) @ p + Vector(center)
+        self.parts.append((bone, color, build, 0.0, 0, smooth))
+
+    def loft(self, bone, color, points, radii, sides=12, up=(0, 0, 1), steps=4, smooth=True,
+             cap_round=0.45, flat_top=True):
+        """Smooth tube through `points` (Catmull-Rom) with elliptical (w, h) `radii`.
+        Pass several bones and the skin weights blend along the tube, so it bends."""
+        def build(bm):
+            pts = [Vector(p) for p in points]
+            n = len(pts)
+            samples, rs = [], []
+            for i in range(n - 1):
+                p0, p1, p2, p3 = pts[max(i - 1, 0)], pts[i], pts[i + 1], pts[min(i + 2, n - 1)]
+                for k in range(steps):
+                    t = k / steps
+                    samples.append(0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t
+                                          + (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t))
+                    e = smooth01(t)
+                    rs.append((radii[i][0] * (1 - e) + radii[i + 1][0] * e,
+                               radii[i][1] * (1 - e) + radii[i + 1][1] * e))
+            samples.append(pts[-1])
+            rs.append(tuple(radii[-1]))
+            upv = Vector(up)
+            rings, tangents = [], []
+            for i, P in enumerate(samples):
+                T = (samples[min(i + 1, len(samples) - 1)] - samples[max(i - 1, 0)]).normalized()
+                S = T.cross(upv)
+                if S.length < 1e-4:
+                    S = Vector((1, 0, 0))
+                S.normalize()
+                U = S.cross(T).normalized()
+                rw, rh = rs[i]
+                ring = []
+                for j in range(sides):
+                    a = 2 * math.pi * j / sides + (math.pi / sides if flat_top else 0.0)
+                    ring.append(bm.verts.new(P + S * (rw * math.cos(a)) + U * (rh * math.sin(a))))
+                rings.append(ring)
+                tangents.append(T)
+            for r1, r2 in zip(rings, rings[1:]):
+                for j in range(sides):
+                    bm.faces.new((r1[j], r1[(j + 1) % sides], r2[(j + 1) % sides], r2[j]))
+            for ring, P, T, r, sign in ((rings[0], samples[0], tangents[0], rs[0], -1),
+                                        (rings[-1], samples[-1], tangents[-1], rs[-1], 1)):
+                # rounded cap: one smaller ring then a fan
+                rad = (r[0] + r[1]) / 2
+                mid = [bm.verts.new(P + (v.co - P) * 0.62 + T * sign * rad * cap_round * 0.7) for v in ring]
+                for j in range(sides):
+                    bm.faces.new((ring[j], ring[(j + 1) % sides], mid[(j + 1) % sides], mid[j]))
+                tip = bm.verts.new(P + T * sign * rad * cap_round)
+                for j in range(sides):
+                    bm.faces.new((mid[j], mid[(j + 1) % sides], tip))
+        self.parts.append((bone, color, build, 0.0, 0, smooth))
+
+    def spike(self, bone, color, base, direction, length, width, depth=None, twist=0.0, snap=True):
+        """Faceted 4-sided blade/spike from `base` pointing along `direction`.
+        snap: at build time, slide the base along the spike's axis onto the body surface and
+        sink it in a little, so spikes never float or bury themselves (turn off for teeth etc.)."""
+        depth = depth if depth is not None else width
+        meta = {'base': Vector(base), 'dir': Vector(direction).normalized(), 'len': length, 'snap': snap}
+        if not hasattr(self, '_spikes'):
+            self._spikes = {}
+        self._spikes[len(self.parts)] = meta
+        def build(bm):
+            base = meta['base']
+            d = Vector(direction).normalized()
+            q = Vector((0, 0, 1)).rotation_difference(d)
+            tw = Quaternion(Vector((0, 0, 1)), math.radians(twist))
+            m = (q @ tw).to_matrix()
+            hw, hd = width / 2, depth / 2
+            local = [(-hw, -hd, 0), (hw, -hd, 0), (hw, hd, 0), (-hw, hd, 0), (0, 0, length)]
+            vs = [bm.verts.new(m @ Vector(p) + Vector(base)) for p in local]
+            bm.faces.new((vs[3], vs[2], vs[1], vs[0]))
+            for i in range(4):
+                bm.faces.new((vs[i], vs[(i + 1) % 4], vs[4]))
+        self.parts.append((bone, color, build, 0.0, 0, False))
+
+    def strip(self, bone, color, lead, trail, thickness=0.1, smooth=False):
+        """Thin double-sided membrane between two matching polylines (wings, fins, leaves).
+        Not used as a snapping surface for spikes."""
+        def build(bm):
+            A = [Vector(p) for p in lead]
+            B = [Vector(p) for p in trail]
+            n = len(A)
+            TA, TB, BA, BB = [], [], [], []
+            for i in range(n):
+                along = A[min(i + 1, n - 1)] - A[max(i - 1, 0)]
+                N = along.cross(B[i] - A[i]).normalized() * (thickness / 2)
+                TA.append(bm.verts.new(A[i] + N)); TB.append(bm.verts.new(B[i] + N))
+                BA.append(bm.verts.new(A[i] - N)); BB.append(bm.verts.new(B[i] - N))
+            for i in range(n - 1):
+                bm.faces.new((TA[i], TA[i + 1], TB[i + 1], TB[i]))
+                bm.faces.new((BA[i], BB[i], BB[i + 1], BA[i + 1]))
+                bm.faces.new((TA[i], BA[i], BA[i + 1], TA[i + 1]))
+                bm.faces.new((TB[i], TB[i + 1], BB[i + 1], BB[i]))
+            for i in (0, n - 1):
+                bm.faces.new((TA[i], TB[i], BB[i], BA[i]))
+        if not hasattr(self, '_nosurface'):
+            self._nosurface = set()
+        self._nosurface.add(len(self.parts))
+        self.parts.append((bone, color, build, 0.0, 0, smooth))
+
+    def _surface_bvh(self, objs):
+        dg = bpy.context.evaluated_depsgraph_get()
+        verts, polys = [], []
+        for ob in objs:
+            ev = ob.evaluated_get(dg)
+            me = ev.to_mesh()
+            off = len(verts)
+            verts.extend(ob.matrix_world @ v.co for v in me.vertices)
+            polys.extend([off + k for k in p.vertices] for p in me.polygons)
+            ev.to_mesh_clear()
+        return BVHTree.FromPolygons(verts, polys) if polys else None
+
+    @staticmethod
+    def _snap_spike(meta, bvh):
+        d, L, base = meta['dir'], meta['len'], meta['base']
+        reach = L * 1.5 + 0.6
+        loc = bvh.ray_cast(base + d * reach, -d, reach * 2.5)[0]
+        if loc is None:
+            loc = bvh.find_nearest(base)[0]
+        if loc is not None and (loc - base).length < max(1.5 * L, 0.6):
+            meta['base'] = loc - d * (0.18 * L)
+
+    def disc(self, bone, color, center, normal, radius, depth=0.04, segments=8):
+        def build(bm):
+            res = bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=segments,
+                                        radius1=radius, radius2=radius, depth=depth)
+            m = Vector((0, 0, 1)).rotation_difference(Vector(normal).normalized()).to_matrix()
+            for v in res['verts']:
+                v.co = m @ v.co + Vector(center)
+        self.parts.append((bone, color, build, 0.0, 0, False))
+
+    def eye(self, bone, center, normal, size=0.3, up=(0, 0, 1), iris='iris'):
+        """Cartoon eye like the reference: dark rim, blue iris, pupil, white glint."""
+        n = Vector(normal).normalized()
+        c = Vector(center)
+        upv = (Vector(up) - n * n.dot(Vector(up))).normalized()
+        self.disc(bone, 'eye_dark', c + n * 0.02, n, size, 0.04, 10)
+        self.disc(bone, iris, c + n * 0.035, n, size * 0.72, 0.04, 10)
+        self.disc(bone, 'eye_dark', c + n * 0.05, n, size * 0.45, 0.04, 10)
+        self.disc(bone, 'eye_glint', c + n * 0.065 + upv * size * 0.25, n, size * 0.2, 0.04, 6)
+
+    def socket(self, name, bone, pos):
+        """A named point that follows `bone` - exported for VFX (spores, glows, trails...)."""
+        if not hasattr(self, 'sockets'):
+            self.sockets = []
+        self.sockets.append((name, bone, Vector(pos)))
+
+    def anim(self, name, frames, loop, fn, key_step=4):
+        """fn(t in [0,1]) -> {bone: (rot_deg_xyz, offset_xyz)} in rest/world axes."""
+        self.anims.append((name, frames, loop, key_step, fn))
+
+    # ---------- build ----------
+    def build(self, out_dir, live=None):
+        if live is None:
+            live = '--live' in sys.argv
+        steps = self._steps(out_dir, live)
+        if not live:
+            for _ in steps:
+                pass
+            return
+
+        def tick():
+            try:
+                with _view3d_override():
+                    return next(steps)
+            except StopIteration:
+                return None
+        bpy.app.timers.register(tick, first_interval=1.5)
+
+    def _steps(self, out_dir, live):
+        """Generator: yields a delay (seconds) between visible build steps."""
+        os.makedirs(out_dir, exist_ok=True)
+        if live:
+            for ob in list(bpy.data.objects):
+                bpy.data.objects.remove(ob)
+            _shading('SOLID', 'MATERIAL')
+        else:
+            bpy.ops.wm.read_factory_settings(use_empty=True)
+        scene = bpy.context.scene
+        scene.render.fps = FPS
+
+        mats = {}
+        for key, (rgb, *_) in self.palette.items():
+            mat = bpy.data.materials.new("C_" + key)
+            mat.diffuse_color = (*rgb, 1)
+            mats[key] = mat
+        mat_keys = list(self.palette.keys())
+
+        # parts -> objects; spikes go last so they can snap onto the finished surfaces
+        objs = []
+        spikes = getattr(self, '_spikes', {})
+        nosurface = getattr(self, '_nosurface', set())
+        order = [i for i in range(len(self.parts)) if i not in spikes] + sorted(spikes)
+        bvh = None
+        for n_built, i in enumerate(order):
+            bone, color, build, bevel, segs, smooth = self.parts[i]
+            if i in spikes:
+                if bvh is None:
+                    bvh = self._surface_bvh([o for o in objs if not o.get('nosurface')]) or False
+                if bvh and spikes[i]['snap']:
+                    self._snap_spike(spikes[i], bvh)
+            bm = bmesh.new()
+            build(bm)
+            bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+            me = bpy.data.meshes.new(f"part{i}")
+            bm.to_mesh(me)
+            bm.free()
+            ob = bpy.data.objects.new(f"part{i}", me)
+            scene.collection.objects.link(ob)
+            for k in mat_keys:
+                me.materials.append(mats[k])
+            idx = mat_keys.index(color)
+            for p in me.polygons:
+                p.material_index = idx
+                p.use_smooth = smooth
+            if bevel > 0:
+                mod = ob.modifiers.new("bevel", 'BEVEL')
+                mod.width = bevel
+                mod.segments = segs
+                mod.limit_method = 'NONE'
+                mod.harden_normals = False
+            ob['bones'] = [bone] if isinstance(bone, str) else list(bone)
+            if i in nosurface:
+                ob['nosurface'] = True
+            objs.append(ob)
+            if live:
+                if n_built % 12 == 0:
+                    _frame_all()
+                yield 0.07
+        if live:
+            _frame_all()
+            yield 1.0
+
+        bpy.ops.object.select_all(action='DESELECT')
+        for ob in objs:
+            ob.select_set(True)
+        bpy.context.view_layer.objects.active = objs[0]
+        bpy.ops.object.convert(target='MESH')
+        for ob in objs:
+            if not getattr(self, 'static', False):
+                self._skin_weights(ob, list(ob['bones']))
+        bpy.ops.object.join()
+        body = bpy.context.view_layer.objects.active
+        body.name = self.name
+        body.data.name = self.name
+        if live:
+            yield 0.8
+
+        # UVs
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=0.006)
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        tex_path = os.path.join(out_dir, f"{self.name}_tex.png")
+        self._bake_texture(body, mat_keys, tex_path)
+
+        # single textured material
+        body.data.materials.clear()
+        mat = bpy.data.materials.new("M_" + self.name)
+        try:
+            mat.use_nodes = True
+        except Exception:
+            pass
+        nt = mat.node_tree
+        bsdf = next(n for n in nt.nodes if n.type == 'BSDF_PRINCIPLED')
+        bsdf.inputs['Roughness'].default_value = 0.85
+        img_node = nt.nodes.new('ShaderNodeTexImage')
+        img_node.image = bpy.data.images.load(tex_path)
+        img_node.interpolation = 'Linear'
+        nt.links.new(img_node.outputs['Color'], bsdf.inputs['Base Color'])
+        nt.nodes.active = img_node
+        body.data.materials.append(mat)
+        for p in body.data.polygons:
+            p.material_index = 0
+        if live:
+            _shading('SOLID', 'TEXTURE')
+            yield 1.2
+
+        if getattr(self, 'static', False):
+            # static props (eggs etc.): mesh + texture only, no rig or animation
+            if live:
+                _frame_all()
+                print("LIVE BUILD DONE", self.name)
+                return
+            bpy.ops.object.select_all(action='DESELECT')
+            body.select_set(True)
+            bpy.context.view_layer.objects.active = body
+            bpy.ops.export_scene.fbx(
+                filepath=os.path.join(out_dir, f"{self.name}.fbx"), use_selection=True, object_types={'MESH'},
+                path_mode='COPY', embed_textures=True, mesh_smooth_type='OFF', axis_forward='-Z', axis_up='Y')
+            bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out_dir, f"{self.name}.blend"))
+            print("BUILD OK", self.name, "tris:", sum(len(p.vertices) - 2 for p in body.data.polygons))
+            return
+
+        # rig
+        arm = self._build_armature(scene)
+        body.parent = arm
+        mod = body.modifiers.new("Armature", 'ARMATURE')
+        mod.object = arm
+        if live:
+            arm.show_in_front = True
+            yield 1.2
+
+        anim_data = self._build_animations(scene, arm)
+        if live:
+            act = bpy.data.actions.get(f"{self.name}_Walk")
+            if act:
+                arm.animation_data.action = act
+                if hasattr(arm.animation_data, 'action_slot') and len(act.slots):
+                    arm.animation_data.action_slot = act.slots[0]
+                scene.frame_start, scene.frame_end = 0, int(act.frame_range[1]) - 1
+            _frame_all()
+            if not bpy.context.screen.is_animation_playing:
+                bpy.ops.screen.animation_play()
+            print("LIVE BUILD DONE", self.name)
+            return
+
+        # export FBX in rest pose
+        arm.animation_data.action = None
+        for pb in arm.pose.bones:
+            pb.rotation_quaternion = (1, 0, 0, 0)
+            pb.location = (0, 0, 0)
+        scene.frame_set(0)
+        bpy.ops.object.select_all(action='DESELECT')
+        body.select_set(True)
+        arm.select_set(True)
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.export_scene.fbx(
+            filepath=os.path.join(out_dir, f"{self.name}.fbx"),
+            use_selection=True, object_types={'ARMATURE', 'MESH'},
+            add_leaf_bones=False, bake_anim=False, path_mode='COPY', embed_textures=True,
+            mesh_smooth_type='OFF', use_armature_deform_only=False,
+            axis_forward='-Z', axis_up='Y')
+
+        info = {
+            'name': self.name,
+            'fps': FPS,
+            'facing': [0, -1, 0],
+            'bones': [{'name': n, 'parent': p, 'head': list(h)} for n, h, t, p in self.bones],
+            'animations': anim_data,
+            'refs': getattr(self, 'refs', {}),
+            'sockets': [{'name': n, 'bone': b, 'pos': list(p)} for n, b, p in getattr(self, 'sockets', [])],
+        }
+        with open(os.path.join(out_dir, f"{self.name}_anims.json"), 'w') as f:
+            json.dump(info, f, separators=(',', ':'))
+
+        self._render_previews(scene, body, arm, out_dir)
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out_dir, f"{self.name}.blend"))
+        print("BUILD OK", self.name, "tris:", sum(len(p.vertices) - 2 for p in body.data.polygons))
+
+    def _skin_weights(self, ob, bones):
+        """Rigid for one bone; for several, blend by distance to each bone segment
+        (inverse 4th power) so joints bend smoothly. Max 3 influences (Roblox allows 4)."""
+        segs = {n: (h, t) for n, h, t, _ in self.bones}
+        groups = {b: ob.vertex_groups.new(name=b) for b in bones}
+        if len(bones) == 1:
+            groups[bones[0]].add(list(range(len(ob.data.vertices))), 1.0, 'REPLACE')
+            return
+        for v in ob.data.vertices:
+            ws = []
+            for b in bones:
+                a, c = segs[b]
+                ab = c - a
+                t = max(0.0, min(1.0, (v.co - a).dot(ab) / ab.length_squared))
+                d = (a + ab * t - v.co).length
+                ws.append((1.0 / (d + 0.08) ** 4, b))
+            ws.sort(reverse=True)
+            ws = ws[:3]
+            tot = sum(w for w, _ in ws)
+            for w, b in ws:
+                if w / tot > 0.02:
+                    groups[b].add([v.index], w / tot, 'REPLACE')
+
+    def ik_leg(self, pose, upper, lower, foot, ankle_target, hip_shift=(0, 0), tilt=0.0):
+        """Planar (YZ) two-bone IK. ankle_target is the world (y, z) for the ankle,
+        hip_shift is how far parent bones moved the hip (dy, dz). Keeps the foot's rest
+        angle plus `tilt` degrees. Writes X rotations into `pose`."""
+        bones = {n: (h, t) for n, h, t, _ in self.bones}
+        hip, knee = bones[upper]
+        _, ankle = bones[lower]
+        L1 = (knee - hip).yz.length
+        L2 = (ankle - knee).yz.length
+        H = Vector((hip.y + hip_shift[0], hip.z + hip_shift[1]))
+        v = Vector(ankle_target) - H
+        if v.length > 1e-6:
+            v = v.normalized() * max(abs(L1 - L2) + 1e-3, min(L1 + L2 - 1e-3, v.length))
+        d = v.length
+        ang = lambda w: math.atan2(w.y, w.x)
+        rest_v = ankle.yz - hip.yz
+        rest_u = knee.yz - hip.yz
+        bend = 1.0 if (rest_v.x * rest_u.y - rest_v.y * rest_u.x) > 0 else -1.0
+        a = math.acos(max(-1, min(1, (L1 * L1 + d * d - L2 * L2) / (2 * L1 * d))))
+        th1 = ang(v) + bend * a
+        k = H + Vector((math.cos(th1), math.sin(th1))) * L1
+        th2 = ang(H + v - k)
+        wrap = lambda x: (x + math.pi) % (2 * math.pi) - math.pi
+        d1 = wrap(th1 - ang(rest_u))
+        d2 = wrap((th2 - ang(ankle.yz - knee.yz)) - d1)
+        d3 = math.radians(tilt) - d1 - d2
+        pose[upper] = ((math.degrees(d1), 0, 0), (0, 0, 0))
+        pose[lower] = ((math.degrees(d2), 0, 0), (0, 0, 0))
+        pose[foot] = ((math.degrees(d3), 0, 0), (0, 0, 0))
+
+    def rest_ankle(self, lower):
+        t = next(t for n, h, t, _ in self.bones if n == lower)
+        return t.y, t.z
+
+    def _bake_texture(self, body, mat_keys, path):
+        W = H = TEX_SIZE
+        me = body.data
+        me.calc_loop_triangles()
+        uv = me.uv_layers.active.data
+        img = np.zeros((H, W, 3), np.float32)
+        dotm = np.zeros((H, W), np.float32)
+        filled = np.zeros((H, W), bool)
+        a3d = 0.0
+        auv = 0.0
+        for tri in me.loop_triangles:
+            rgb, dots, _edges = self.palette[mat_keys[tri.material_index]]
+            p = np.array([uv[l].uv[:] for l in tri.loops], np.float64) * [W, H]
+            area_uv = abs((p[1, 0] - p[0, 0]) * (p[2, 1] - p[0, 1]) - (p[2, 0] - p[0, 0]) * (p[1, 1] - p[0, 1])) / 2
+            if dots:
+                a3d += tri.area
+                auv += area_uv
+            x0, y0 = np.floor(p.min(0)).astype(int) - 1
+            x1, y1 = np.ceil(p.max(0)).astype(int) + 1
+            x0, y0 = max(x0, 0), max(y0, 0)
+            x1, y1 = min(x1, W - 1), min(y1, H - 1)
+            if x1 < x0 or y1 < y0:
+                continue
+            xs, ys = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
+            def edge(a, b):
+                return (b[0] - a[0]) * (ys - a[1]) - (b[1] - a[1]) * (xs - a[0])
+            e0, e1, e2 = edge(p[0], p[1]), edge(p[1], p[2]), edge(p[2], p[0])
+            inside = ((e0 >= 0) & (e1 >= 0) & (e2 >= 0)) | ((e0 <= 0) & (e1 <= 0) & (e2 <= 0))
+            sub = (slice(y0, y1 + 1), slice(x0, x1 + 1))
+            img[sub][inside] = rgb
+            dotm[sub][inside] = 1.0 if dots else 0.0
+            filled[sub][inside] = True
+
+        # bleed islands outward so mip-mapping never shows seams
+        for _ in range(24):
+            empty = ~filled
+            if not empty.any():
+                break
+            acc = np.zeros_like(img)
+            accd = np.zeros_like(dotm)
+            cnt = np.zeros((H, W), np.float32)
+            for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                sf = np.roll(filled, (dy, dx), (0, 1))
+                acc += np.roll(img, (dy, dx), (0, 1)) * sf[..., None]
+                accd += np.roll(dotm, (dy, dx), (0, 1)) * sf
+                cnt += sf
+            new = empty & (cnt > 0)
+            img[new] = acc[new] / cnt[new][:, None]
+            dotm[new] = accd[new] / cnt[new]
+            filled |= new
+        img[~filled] = img[filled].mean(0)
+
+        wpp = math.sqrt(a3d / max(auv, 1e-6)) if auv > 0 else 0.01
+        yy, xx = np.mgrid[0:H, 0:W].astype(np.float32) + 0.5
+        if SURFACE == 'dots':
+            # fabric dots (hex grid in UV space, uniform world density)
+            S = max(5.0, DOT_SPACING_WORLD / wpp)
+            rad = S * 0.3
+            row = np.floor(yy / S)
+            gx = ((xx + (row % 2) * S / 2) % S) - S / 2
+            gy = (yy % S) - S / 2
+            r = np.sqrt(gx * gx + gy * gy)
+            dot = np.clip((rad + 0.6 - r) / 1.2, 0, 1)
+            img *= (1 - 0.16 * dot * dotm)[..., None]
+        else:
+            # Roblox studs: a square grid of round bumps - a lighter top with a glint, a dark ring
+            # of shadow around each one
+            S = max(6.0, STUD_SPACING_WORLD / wpp)
+            rad = S * 0.31
+            gx = (xx % S) - S / 2
+            gy = (yy % S) - S / 2
+            r = np.sqrt(gx * gx + gy * gy)
+            disc = np.clip((rad - r) / 1.1 + 0.5, 0, 1)
+            ring = np.clip(1.0 - np.abs(r - rad - 0.7) / 1.1, 0, 1)
+            glint = np.clip((rad * 0.42 - np.sqrt((gx + rad * 0.3) ** 2 + (gy - rad * 0.3) ** 2)) / 1.2 + 0.5, 0, 1)
+            shade = 1.0 + 0.07 * disc - 0.24 * ring + 0.10 * glint
+            img *= (1 + (shade - 1) * dotm)[..., None]
+
+        # dark outlines round every face of the 'edges' colours (plates, petals, scales)
+        ink = np.ones((H, W), np.float32)
+        for poly in me.polygons:
+            _rgb, _dots, edges = self.palette[mat_keys[poly.material_index]]
+            if not edges:
+                continue
+            pts = [np.array(uv[li].uv[:], np.float64) * [W, H] for li in poly.loop_indices]
+            for a, b in zip(pts, pts[1:] + pts[:1]):
+                lx0, ly0 = np.floor(np.minimum(a, b)).astype(int) - 3
+                lx1, ly1 = np.ceil(np.maximum(a, b)).astype(int) + 3
+                lx0, ly0 = max(lx0, 0), max(ly0, 0)
+                lx1, ly1 = min(lx1, W - 1), min(ly1, H - 1)
+                if lx1 < lx0 or ly1 < ly0:
+                    continue
+                px_, py_ = np.meshgrid(np.arange(lx0, lx1 + 1) + 0.5, np.arange(ly0, ly1 + 1) + 0.5)
+                d = b - a
+                L2 = max(d @ d, 1e-9)
+                t = np.clip(((px_ - a[0]) * d[0] + (py_ - a[1]) * d[1]) / L2, 0, 1)
+                dist = np.hypot(px_ - (a[0] + t * d[0]), py_ - (a[1] + t * d[1]))
+                line = np.clip(1.5 - dist, 0, 1)
+                sub = (slice(ly0, ly1 + 1), slice(lx0, lx1 + 1))
+                ink[sub] = np.minimum(ink[sub], 1 - 0.6 * line)
+        img *= ink[..., None]
+        img = np.clip(img, 0, 1)
+
+        im = bpy.data.images.new(self.name + "_tex", W, H, alpha=False)
+        rgba = np.concatenate([img, np.ones((H, W, 1), np.float32)], axis=2)
+        im.pixels.foreach_set(rgba.ravel())
+        im.filepath_raw = path
+        im.file_format = 'PNG'
+        im.save()
+        print(f"texture: {SURFACE} spacing {S:.1f}px")
+
+    def _build_armature(self, scene):
+        data = bpy.data.armatures.new(self.name + "_Rig")
+        arm = bpy.data.objects.new(self.name + "_Rig", data)
+        scene.collection.objects.link(arm)
+        bpy.ops.object.select_all(action='DESELECT')
+        bpy.context.view_layer.objects.active = arm
+        arm.select_set(True)
+        bpy.ops.object.mode_set(mode='EDIT')
+        for name, head, tail, parent in self.bones:
+            eb = data.edit_bones.new(name)
+            eb.head, eb.tail, eb.roll = head, tail, 0.0
+            if parent:
+                eb.parent = data.edit_bones[parent]
+                eb.use_connect = False
+        bpy.ops.object.mode_set(mode='OBJECT')
+        data.display_type = 'STICK'
+        for pb in arm.pose.bones:
+            pb.rotation_mode = 'QUATERNION'
+        return arm
+
+    def _apply_pose(self, arm, pose):
+        for pb in arm.pose.bones:
+            rot, off = pose.get(pb.name, ((0, 0, 0), (0, 0, 0)))
+            R = pb.bone.matrix_local.to_3x3()
+            Rinv = R.inverted()
+            pb.rotation_quaternion = (Rinv @ _rot_matrix(rot) @ R).to_quaternion()
+            pb.location = Rinv @ Vector(off)
+
+    def _build_animations(self, scene, arm):
+        arm.animation_data_create()
+        ad = arm.animation_data
+        actions = {}
+        for name, frames, loop, step, fn in self.anims:
+            ad.action = None
+            keys = list(range(0, frames + 1, step))
+            if keys[-1] != frames:
+                keys.append(frames)
+            for f in keys:
+                self._apply_pose(arm, fn(f / frames))
+                for pb in arm.pose.bones:
+                    pb.keyframe_insert('rotation_quaternion', frame=f)
+                    pb.keyframe_insert('location', frame=f)
+            act = ad.action
+            act.name = f"{self.name}_{name}"
+            act.use_fake_user = True
+            act.frame_range = (0, frames)
+            try:
+                act.use_cyclic = loop
+            except Exception:
+                pass
+            actions[name] = act
+
+        out = {}
+        mw = arm.matrix_world
+        for name, frames, loop, step, fn in self.anims:
+            act = actions[name]
+            ad.action = act
+            if hasattr(ad, 'action_slot') and len(getattr(act, 'slots', [])) > 0:
+                ad.action_slot = act.slots[0]
+            samples = []
+            last = frames if loop else frames + 1
+            for f in range(0, last):
+                scene.frame_set(f)
+                fr = {}
+                for pb in arm.pose.bones:
+                    D = (mw @ pb.matrix) @ (mw @ pb.bone.matrix_local).inverted()
+                    t = D.to_translation()
+                    q = D.to_quaternion()
+                    fr[pb.name] = [round(v, 5) for v in (t.x, t.y, t.z, q.w, q.x, q.y, q.z)]
+                samples.append(fr)
+            out[name] = {'loop': loop, 'frames': samples}
+        ad.action = actions[self.anims[0][0]]
+        if hasattr(ad, 'action_slot') and len(getattr(ad.action, 'slots', [])) > 0:
+            ad.action_slot = ad.action.slots[0]
+        return out
+
+    def _render_previews(self, scene, body, arm, out_dir):
+        scene.render.engine = 'BLENDER_WORKBENCH'
+        sh = scene.display.shading
+        sh.light = 'STUDIO'
+        sh.color_type = 'TEXTURE'
+        sh.show_shadows = True
+        sh.show_cavity = False
+        scene.render.resolution_x = 800
+        scene.render.resolution_y = 600
+        scene.render.film_transparent = False
+        world = bpy.data.worlds.new("W")
+        world.color = (0.62, 0.8, 0.95)
+        scene.world = world
+        try:
+            scene.display_settings.display_device = 'sRGB'
+            scene.view_settings.view_transform = 'Standard'
+        except Exception:
+            pass
+
+        # frame the model
+        bb = [body.matrix_world @ Vector(c) for c in body.bound_box]
+        lo = Vector((min(v.x for v in bb), min(v.y for v in bb), min(v.z for v in bb)))
+        hi = Vector((max(v.x for v in bb), max(v.y for v in bb), max(v.z for v in bb)))
+        center = (lo + hi) / 2
+        radius = (hi - lo).length / 2
+
+        cam_data = bpy.data.cameras.new("Cam")
+        cam_data.lens = 50
+        cam = bpy.data.objects.new("Cam", cam_data)
+        scene.collection.objects.link(cam)
+        scene.camera = cam
+
+        shots = [
+            ('Idle', 0.0, (-0.75, -1.0, 0.45)),
+            ('Walk', 0.25, (1.0, -0.15, 0.25)),
+            ('Sleep', 0.0, (0.8, -1.0, 0.55)),
+            ('Roar', 0.5, (-0.55, -1.0, 0.25)),
+        ]
+        names = [a[0] for a in self.anims]
+        paths = []
+        ad = arm.animation_data
+        for anim_name, t, direction in shots:
+            if anim_name not in names:
+                continue
+            frames = next(a[1] for a in self.anims if a[0] == anim_name)
+            act = bpy.data.actions[f"{self.name}_{anim_name}"]
+            ad.action = act
+            if hasattr(ad, 'action_slot') and len(getattr(act, 'slots', [])) > 0:
+                ad.action_slot = act.slots[0]
+            scene.frame_set(int(t * frames))
+            d = Vector(direction).normalized()
+            cam.location = center + d * radius * 2.9
+            cam.rotation_euler = (center - cam.location).to_track_quat('-Z', 'Y').to_euler()
+            p = os.path.join(out_dir, f"_shot_{anim_name}.png")
+            scene.render.filepath = p
+            bpy.ops.render.render(write_still=True)
+            paths.append((anim_name, p))
+
+        # 2x2 contact sheet
+        tiles = []
+        for _, p in paths:
+            im = bpy.data.images.load(p)
+            a = np.array(im.pixels[:], np.float32).reshape(im.size[1], im.size[0], 4)
+            tiles.append(a)
+        while len(tiles) < 4:
+            tiles.append(np.ones_like(tiles[0]))
+        top = np.concatenate([tiles[0], tiles[1]], axis=1)
+        bottom = np.concatenate([tiles[2], tiles[3]], axis=1)
+        sheet = np.concatenate([bottom, top], axis=0)  # blender pixel rows go bottom-up
+        h, w = sheet.shape[:2]
+        out = bpy.data.images.new(self.name + "_preview", w, h, alpha=False)
+        out.pixels.foreach_set(sheet.ravel())
+        out.filepath_raw = os.path.join(out_dir, f"{self.name}_preview.png")
+        out.file_format = 'PNG'
+        out.save()
+        for _, p in paths:
+            os.remove(p)

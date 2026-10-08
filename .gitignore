@@ -1,0 +1,20 @@
+# Generated output (FBX models, .blend files, renders, textures, anim JSON) - rebuilt by the scripts
+export/
+
+# Blender autosaves / backups
+*.blend1
+*.blend2
+*.blend@
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# OS / editor junk
+Thumbs.db
+desktop.ini
+.DS_Store
+*.log
+*.tmp
+.vscode/
+.idea/

@@ -1,0 +1,268 @@
+"""Shadow Wraith - Rare Underworld spectre: a floating hooded wraith in a tattered dark cloak that
+streams into a ragged ghost tail, glowing eyes in a black hood void, a torn chest showing ribs and a
+green soul-flame inside, skeletal clawed hands, a chain wrapped across the body and a ghost lantern
+swinging from its left hand. No legs - it floats and glides. Faces -Y.
+    blender -b --python wraith.py -- <out_dir> [Child|Teen|Adult] [--live]
+Sockets: Eyes (glow), Lantern (spirit flame), Soul (chest glow), CloakTrail (tail wisps)."""
+import sys, os, math
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from creature import setup, refs, envelope, smooth01, add, TAU
+
+m, st, OUT = setup('ShadowWraith', {
+    'cloak': '#3e3560', 'cloak2': '#5e5088', 'void': ('#05030a', False), 'ghost': ('#6dffc8', False),
+    'ghost2': ('#d0fff0', False), 'bone': '#e8e0cc', 'claw': ('#1a1418', False), 'iron': ('#4a4a56', False),
+    'eye_dark': ('#05030a', False), 'iris': ('#6dffc8', False), 'eye_glint': ('#ffffff', False),
+}, {'Child': dict(head=1.3), 'Teen': dict(head=1.12)})
+S, E, g, h = st['S'], st['energy'], st['grow'], st['head']
+SIDES = (('L', 1), ('R', -1))
+HOOD = (0, 0.0, 3.85 + 0.3 * (h - 1))
+
+
+def Hd(x, y, z):
+    return (HOOD[0] + x * h, HOOD[1] + y * h, HOOD[2] + z * h)
+
+
+# cloak profile: (z, radius) top to hem, centre drifts back a little
+PROFILE = [(3.45, 0.62), (3.0, 0.88), (2.4, 0.98), (1.8, 1.06), (1.3, 1.15)]
+
+
+def cy(z):
+    return 0.1 + 0.05 * (3.45 - z)
+
+
+def radius(z):
+    for (z0, r0), (z1, r1) in zip(PROFILE, PROFILE[1:]):
+        if z1 <= z <= z0:
+            return r0 + (r1 - r0) * (z0 - z) / (z0 - z1)
+    return PROFILE[-1][1]
+
+
+def front(x, z, out=0.04):
+    r = radius(z)
+    return (x, cy(z) - math.sqrt(max(0.01, r * r - x * x)) - out, z)
+
+
+SH = {s: (0.72 * s, 0.05, 3.15) for _, s in SIDES}
+EL = {s: (1.1 * s, -0.4, 2.5) for _, s in SIDES}
+WR = {s: (1.2 * s, -0.9, 2.2) for _, s in SIDES}
+TAILP = [(0, 0.75, 1.55), (0, 1.45, 1.05), (0, 2.15, 0.8), (0, 2.8, 0.75)]
+
+# ---------------- rig ----------------
+m.bone('MonsterRoot', (0, 0, 0), (0, 0, 1))
+m.bone('Body', (0, 0.1, 1.3), (0, 0.1, 3.3), 'MonsterRoot')
+m.bone('Head', (0, 0.05, 3.3), Hd(0, -0.9, 0.0), 'Body')
+for side, s in SIDES:
+    m.bone(f'Arm{side}', SH[s], EL[s], 'Body')
+    m.bone(f'Fore{side}', EL[s], WR[s], f'Arm{side}')
+m.bone('Lantern', add(WR[1], (0.02, -0.2, -0.1)), add(WR[1], (0.02, -0.2, -0.85)), 'ForeL')
+for i in range(3):
+    m.bone(f'Cloak{i + 1}', TAILP[i], TAILP[i + 1], 'Body' if i == 0 else f'Cloak{i}')
+
+# ---------------- cloak body ----------------
+m.loft('Body', 'cloak', [(0, cy(z), z) for z, _ in PROFILE], [(r, r) for _, r in PROFILE], sides=12, steps=2, smooth=False)
+m.loft('Body', 'cloak2', [(0, cy(3.5), 3.5), (0, cy(3.3), 3.3)], [(0.78, 0.78), (0.8, 0.8)], sides=12, steps=1, smooth=False)   # mantle
+# tattered hem: ragged strips hanging all round (the back ones belong to the tail)
+for k in range(12):
+    a = TAU * k / 12
+    if math.cos(a) > 0.7:   # +Y back is the tail
+        continue
+    x, y = math.sin(a), -math.cos(a)
+    r = radius(1.3)
+    base = (x * r * 0.95, cy(1.3) + y * r * 0.95, 1.4)
+    m.spike('Body', 'cloak' if k % 2 else 'cloak2', base, (x * 0.25, y * 0.25, -1), 0.7 + 0.35 * (k % 3), 0.42, 0.06)
+# ghost tail streaming off the back
+m.loft(['Body', 'Cloak1', 'Cloak2', 'Cloak3'], 'cloak', TAILP, [(0.8, 0.55), (0.55, 0.38), (0.32, 0.22), (0.08, 0.06)],
+       sides=8, steps=3, smooth=False)
+for i, t in enumerate((0.2, 0.45, 0.7)):
+    p0, p1 = TAILP[i], TAILP[i + 1]
+    p = tuple(a + (b - a) * 0.5 for a, b in zip(p0, p1))
+    w = 0.7 * (1 - t)
+    for side, s in SIDES:
+        m.spike(f'Cloak{i + 1}', 'cloak2', (w * s, p[1], p[2]), (s, 0.6, -0.4), 0.6 * (1 - 0.3 * i), 0.3, 0.05)
+    m.spike(f'Cloak{i + 1}', 'cloak2', (0, p[1], p[2] - 0.3 * (1 - t)), (0, 0.4, -1), 0.55 * (1 - 0.3 * i), 0.28, 0.05)
+m.socket('CloakTrail', 'Cloak3', TAILP[3])
+
+# torn chest: dark hole with ribs and a green soul flame inside
+cz = 2.55
+m.blob('Body', 'void', add(front(0, cz, -0.05), (0, 0, 0)), (0.42, 0.12, 0.52), u=10, v=7)
+m.blob('Body', 'ghost', front(0, cz, 0.0), (0.16, 0.08, 0.2), u=8, v=5)
+m.socket('Soul', 'Body', front(0, cz, 0.15))
+for dz in (-0.28, -0.08, 0.12, 0.32):
+    w = 0.62 - 0.12 * abs(dz) * 2
+    m.box('Body', 'bone', front(0, cz + dz, 0.05), (w, 0.08, 0.07), bevel=0.03)
+m.box('Body', 'bone', front(0, cz + 0.02, 0.07), (0.1, 0.08, 0.7), bevel=0.03)   # sternum
+# torn flaps round the hole
+for side, s in SIDES:
+    m.spike('Body', 'cloak2', front(0.42 * s, cz + 0.1, 0.0), (0.4 * s, -0.4, -1), 0.45, 0.2, 0.04)
+
+# a chain wrapped across the body, shoulder to hip
+N = 11
+for i in range(N):
+    t = i / (N - 1)
+    x, z = 0.75 - 1.55 * t, 3.05 - 1.2 * t
+    p = front(x, z, 0.04)
+    rot = (0, 0, 0) if i % 2 == 0 else (0, 0, 90)
+    m.box('Body', 'iron', p, (0.2, 0.06, 0.13) if i % 2 == 0 else (0.06, 0.2, 0.13), rot=(0, -38, 0), bevel=0.025)
+
+# ---------------- hood and face ----------------
+m.blob('Head', 'cloak', Hd(0, 0.05, 0.0), (0.72, 0.75, 0.7), u=12, v=9)
+m.spike('Head', 'cloak', Hd(0, 0.25, 0.45), (0, 0.8, 0.5), 0.75 * h, 0.4 * h, 0.05 * h)   # hood peak
+m.loft('Head', 'cloak2', [Hd(0, -0.4, 0.0), Hd(0, -0.82, -0.02)], [(0.56 * h, 0.64 * h), (0.6 * h, 0.68 * h)], sides=12, steps=1, cap_round=0.0,
+       smooth=False)   # cowl rim
+m.blob('Head', 'void', Hd(0, -0.86, -0.03), (0.47 * h, 0.08 * h, 0.55 * h), u=10, v=7)
+for side, s in SIDES:
+    m.blob('Head', 'ghost', Hd(0.19 * s, -0.95, 0.08), (0.14 * h, 0.06 * h, 0.09 * h), u=8, v=5)
+    m.blob('Head', 'ghost2', Hd(0.19 * s, -1.0, 0.08), (0.06 * h, 0.03 * h, 0.04 * h), u=6, v=4)
+for k in range(5):
+    x = (-0.2 + 0.1 * k) * h
+    m.box('Head', 'bone', Hd(x / h, -0.93, -0.32), (0.07 * h, 0.04 * h, 0.12 * h), bevel=0.015)   # grin in the dark
+m.socket('Eyes', 'Head', Hd(0, -0.98, 0.08))
+
+# ---------------- arms: flared sleeves, bony claws ----------------
+for side, s in SIDES:
+    m.loft([f'Arm{side}', f'Fore{side}'], 'cloak', [SH[s], EL[s], WR[s]], [(0.3, 0.3), (0.3, 0.3), (0.44, 0.44)], sides=8, steps=2,
+           smooth=False, up=(0, -1, 0))
+    m.spike(f'Fore{side}', 'cloak2', add(WR[s], (0, 0.1, -0.2)), (0.2 * s, 0.4, -1), 0.6, 0.28, 0.04)   # sleeve tatter
+    hand = add(WR[s], (0.02 * s, -0.2, -0.1))
+    m.blob(f'Fore{side}', 'bone', hand, (0.17, 0.16, 0.12), u=8, v=5)
+    for k in range(4):
+        dx = (k - 1.5) * 0.09
+        base = add(hand, (dx, -0.1, 0))
+        d = (dx * 0.8, -1, -0.55)
+        L = (0.38 + 0.12 * g) * (1 - 0.12 * abs(k - 1.5))
+        m.spike(f'Fore{side}', 'bone', base, d, L, 0.05, snap=False)
+        tip = add(base, tuple(c * L * 0.85 / math.sqrt(sum(v * v for v in d)) for c in d))
+        m.spike(f'Fore{side}', 'claw', tip, (0, -0.4, -1), 0.16, 0.04, snap=False)
+    m.spike(f'Fore{side}', 'bone', add(hand, (0.17 * s, -0.05, 0)), (0.6 * s, -1, -0.2), 0.28, 0.05, snap=False)   # thumb
+
+# ---------------- ghost lantern hanging from the left hand ----------------
+top = add(WR[1], (0.02, -0.2, -0.1))
+for i in range(4):
+    p = add(top, (0, 0, -0.12 - 0.12 * i))
+    m.box('Lantern', 'iron', p, (0.05, 0.12, 0.12) if i % 2 else (0.12, 0.05, 0.12), bevel=0.02)
+lc = add(top, (0, 0, -0.95))
+m.box('Lantern', 'iron', add(lc, (0, 0, 0.32)), (0.45, 0.45, 0.08), bevel=0.03)
+m.spike('Lantern', 'iron', add(lc, (0, 0, 0.36)), (0, 0, 1), 0.18, 0.22, 0.05)
+m.box('Lantern', 'iron', add(lc, (0, 0, -0.3)), (0.45, 0.45, 0.08), bevel=0.03)
+for dx in (-0.18, 0.18):
+    for dy in (-0.18, 0.18):
+        m.loft('Lantern', 'iron', [add(lc, (dx, dy, -0.3)), add(lc, (dx, dy, 0.32))], [(0.03, 0.03)] * 2, sides=4, steps=1, smooth=False)
+m.box('Lantern', 'ghost2', lc, (0.3, 0.3, 0.5), bevel=0.04)
+m.blob('Lantern', 'ghost', lc, (0.13, 0.13, 0.2), u=8, v=5)
+m.socket('Lantern', 'Lantern', lc)
+
+
+# ---------------- animation ----------------
+WALK = dict(stride=1.6, frames=32)
+RUN = dict(stride=3.8, frames=24)
+
+
+def float_z(p, amp=0.18):
+    return amp * S * math.sin(p)
+
+
+def tail(pose, p, amp, lift=0.0):
+    for i in range(3):
+        pose[f'Cloak{i + 1}'] = ((lift + amp * 0.6 * math.sin(p - 0.9 * i), 0, amp * (1 + 0.3 * i) * math.sin(p * 0.5 - 0.8 * i)), (0, 0, 0))
+
+
+def arms(pose, reach_l, reach_r, spread=0.0):
+    pose['ArmL'] = ((-reach_l, -spread, 0), (0, 0, 0))
+    pose['ArmR'] = ((-reach_r, spread, 0), (0, 0, 0))
+
+
+def idle(t_):
+    p = TAU * t_
+    pose = {
+        'MonsterRoot': ((0, 0, 0), (0, 0, float_z(p))),
+        'Body': ((3 * math.sin(p + 1), 3 * math.sin(p), 0), (0, 0, 0)),
+        'Head': ((5 * math.sin(p + 2), 0, 18 * math.sin(p * 0.5)), (0, 0, 0)),
+        'Lantern': ((-8 * math.sin(p + 0.5), 6 * math.sin(p), 0), (0, 0, 0)),
+        'ForeL': ((-10, 0, 0), (0, 0, 0)),
+        'ForeR': ((-5 + 8 * math.sin(p * 2), 0, 0), (0, 0, 0)),
+    }
+    arms(pose, 10 + 4 * math.sin(p), 4 * math.sin(p + 1))
+    tail(pose, p * 2, 14)
+    return pose
+
+
+def glide(t_, lean, amp):
+    p = TAU * t_
+    pose = {
+        'MonsterRoot': ((0, 0, 0), (0, 0, float_z(p * 2, 0.12))),
+        'Body': ((lean, 4 * math.sin(p), 3 * math.sin(p)), (0, 0, 0)),
+        'Head': ((-lean * 0.7 + 3 * math.sin(2 * p), 0, -3 * math.sin(p)), (0, 0, 0)),
+        'Lantern': ((25 + 8 * math.sin(2 * p), 0, 0), (0, 0, 0)),
+        'ForeL': ((-15, 0, 0), (0, 0, 0)),
+        'ForeR': ((-20, 0, 0), (0, 0, 0)),
+    }
+    arms(pose, 15 + 6 * math.sin(p), -lean * 0.8 + 8 * math.sin(p + math.pi), lean * 0.4)
+    tail(pose, p * 2, amp, lift=-lean * 0.6)
+    return pose
+
+
+def sleep(t_):
+    p = TAU * t_
+    pose = {
+        'MonsterRoot': ((0, 0, 0), (0, 0, -0.55 * S + float_z(p, 0.05))),
+        'Body': ((12, 0, 0), (0, 0, 0)),
+        'Head': ((28 + 3 * math.sin(p), 0, 10), (0, 0, 0)),
+        'Lantern': ((-12, 0, 0), (0, 0, 0)),
+    }
+    arms(pose, -5, -5, -8)
+    tail(pose, p, 6, lift=-10)
+    return pose
+
+
+def screech(t_):
+    e = envelope(t_, 0.2, 0.75)
+    shake = math.sin(TAU * 9 * t_) * e
+    pose = {
+        'MonsterRoot': ((0, 0, 0), (0, 0, 0.5 * S * e)),
+        'Body': ((-18 * e, 0, 0), (0, 0.2 * S * e, 0)),
+        'Head': ((-25 * e + 5 * shake, 4 * shake, 0), (0, 0, 0)),
+        'Lantern': ((-30 * e, 0, 0), (0, 0, 0)),
+        'ForeL': ((-25 * e, 0, 0), (0, 0, 0)),
+        'ForeR': ((-25 * e, 0, 0), (0, 0, 0)),
+    }
+    arms(pose, 70 * e, 70 * e, 45 * e)
+    tail(pose, TAU * 3 * t_, 25 * e, lift=15 * e)
+    return pose
+
+
+def lunge(t_):
+    wind = envelope(t_, 0.05, 0.35, 0.4)
+    hit = envelope(t_, 0.38, 0.55, 0.85)
+    pose = {
+        'MonsterRoot': ((0, 0, 0), (0, -0.9 * S * hit + 0.2 * S * wind, 0.3 * S * wind)),
+        'Body': ((-12 * wind + 22 * hit, 0, 0), (0, 0, 0)),
+        'Head': ((-10 * wind - 10 * hit, 0, 0), (0, 0, 0)),
+        'Lantern': ((-25 * hit + 20 * wind, 0, 0), (0, 0, 0)),
+        'ForeR': ((-30 * wind, 0, 0), (0, 0, 0)),
+    }
+    arms(pose, 10, 110 * wind - 40 * hit + 60 * hit, 20 * wind)
+    tail(pose, TAU * 2 * t_, 20, lift=12 * hit)
+    return pose
+
+
+def happy(t_):
+    e = envelope(t_, 0.1, 0.8)
+    pose = {
+        'MonsterRoot': ((0, 0, 360 * smooth01(t_ / 0.7) if t_ < 0.7 else 0), (0, 0, 0.8 * S * e)),
+        'Head': ((-15 * e, 0, 0), (0, 0, 0)),
+        'Lantern': ((0, 40 * e * math.sin(TAU * 2 * t_), 0), (0, 0, 0)),
+    }
+    arms(pose, 30 * e, 30 * e, 40 * e)
+    tail(pose, TAU * 3 * t_, 30 * e, lift=20 * e)
+    return pose
+
+
+m.anim('Idle', 90, True, idle, key_step=2)
+m.anim('Walk', WALK['frames'], True, lambda t_: glide(t_, 10, 16), key_step=2)
+m.anim('Run', RUN['frames'], True, lambda t_: glide(t_, 22, 22), key_step=1)
+m.anim('Sleep', 96, True, sleep, key_step=8)
+m.anim('Roar', 48, False, screech, key_step=2)
+m.anim('Attack', 36, False, lunge, key_step=2)
+m.anim('Happy', 42, False, happy, key_step=1)
+m.refs = refs({'Walk': WALK, 'Run': RUN}, S)
+m.build(OUT)
