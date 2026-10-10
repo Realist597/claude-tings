@@ -634,7 +634,7 @@ def scarf_path(s):
 def scarf():
     """a long purple scarf tail streaming from the collar, ending in a swallowtail"""
     grow = lambda s: smoothstep(s / 0.28)     # flat against the collar at its root, free beyond
-    ribbon('Scarf', 'Silk', scarf_path, lambda s: 0.12 + 0.17 * grow(s) - 0.06 * s, dens(60), dens(4), 0.014,
+    ribbon('Scarf', 'Silk', scarf_path, lambda s: 0.125, dens(60), dens(4), 0.014,      # as wide as the collar's fold
            twist=lambda s: 0.5 * math.sin(s * 5.2 + 0.4) * grow(s),
            wave=lambda s: grow(s) * (0.07 * s * math.sin(s * 14) + 0.015 * math.sin(s * 41 + 1)), fork=0.13,
            name='scarf')
@@ -702,7 +702,7 @@ def pauldron():
              trim=T('blr', mat='Silver', w=0.035, th=0.02))
     for t in (-55, 0, 55):   # rivets round the cap
         x, y = se(math.radians(t), 2.6)
-        rivet('LeftArm', 'Silver', (cx + 0.06 + x * 0.755, y * 0.765, 3.9), (x, y, 0.15), 0.032, flat=0.6)
+        rivet('LeftArm', 'Silver', (cx + 0.06 + x * 0.792, y * 0.802, 3.9), (x, y, 0.15), 0.032, flat=0.6)
 
 
 def leg():
@@ -726,13 +726,14 @@ def leg():
     # the knee guard: a kite of hardened leather with a sharp ridge, a silver diamond, and a strap behind
     W, zc = 0.25, 1.14
     kite = lambda x, z: 0.035 + 0.06 * (1 - abs(x) / W) + 0.03 * math.sin(math.pi * clamp((z - 0.87) / 0.6))
-    sheet('LeftLeg', 'Leather', 'front', (0.545 + 0.02, cx), -W + 0.012, W - 0.012, lambda x: zc - 0.27 * (1 - abs(x) / W),
+    KD = 0.625   # the guard's plane, clear of the strap under it
+    sheet('LeftLeg', 'Leather', 'front', (KD, cx), -W + 0.012, W - 0.012, lambda x: zc - 0.27 * (1 - abs(x) / W),
           lambda x: zc + 0.33 * (1 - abs(x) / W), kite, th=0.045, nu=12, nv=10, bevel=0.006, name='knee')
     w2 = 0.075
-    sheet('LeftLeg', 'Silver', 'front', (0.545 + 0.02, cx), -w2 + 0.002, w2 - 0.002, lambda x: zc + 0.02 - 0.1 * (1 - abs(x) / w2),
+    sheet('LeftLeg', 'Silver', 'front', (KD, cx), -w2 + 0.002, w2 - 0.002, lambda x: zc + 0.02 - 0.1 * (1 - abs(x) / w2),
           lambda x: zc + 0.02 + 0.12 * (1 - abs(x) / w2), lambda x, z: kite(x, z) + 0.045 + 0.02 * (1 - abs(x) / w2), th=0.02,
           nu=4, nv=4, bevel=0.004, name='knee_diamond')
-    wrap('LeftLeg', 'Strap', (cx, 0), 1.1, 1.165, 0.59, 0.6, -86, 266, ex=8, th=0.02, nu=36, nv=1, bevel=0.004,
+    wrap('LeftLeg', 'Strap', (cx, 0), 1.1, 1.165, 0.59, 0.6, 180, 540, ex=8, th=0.02, nu=40, nv=1, closed=True, bevel=0.004,
          name='knee_strap')
     # the boot: a tall leather boot with a toe box and a sole, a flared cuff, and crossing straps
     BC = (0.52, -0.03)
@@ -756,11 +757,11 @@ def leg():
         x, y = rr_point(s_, BW + 0.035 + toe(s_, 0.04), BD + 0.035 + toe(s_, 0.04), BR)
         return (BC[0] + v * x, BC[1] + v * y, -0.02)
     slab('LeftLeg', 'Leather', sole_fill, 48, 3, 0.03, lambda p: (p[0], p[1], p[2] + 1), bevel=0.006, name='sole_bottom')
-    for zc_, tilt, ph, lift in ((0.47, 0.1, 0.0, 0.018), (0.47, -0.1, 0.0, 0.03), (0.2, 0.0, 0.0, 0.018)):
+    for zc_, tilt, ph, lift in ((0.47, 0.1, 0.0, 0.052), (0.47, -0.1, 0.0, 0.066), (0.2, 0.0, 0.0, 0.052)):   # on the 0.05 boot
         z0 = lambda s_, zc_=zc_, tilt=tilt, ph=ph: zc_ + tilt * math.sin(math.pi * s_ / H + ph)
-        bwrap('LeftLeg', 'Strap', BC, z0, lambda s_, z0=z0: z0(s_) + 0.06, BW, BD, BR, -H, H, nu=48, nv=1,
+        bwrap('LeftLeg', 'Strap', BC, z0, lambda s_, z0=z0: z0(s_) + 0.06, BW, BD, BR, -H, H, nu=48, nv=1, th=0.018,
               extra=lambda s_, z, lift=lift: toe(s_, z) + lift, bevel=0.004, name='boot_strap')
-    ring('LeftLeg', 'Silver', (BC[0] + BW + 0.018 + 0.02 + 0.004, BC[1], 0.23), (1, 0, 0), (0, -1, 0), 0.05, 0.055,
+    ring('LeftLeg', 'Silver', (BC[0] + BW + 0.052 + 0.018 + 0.004, BC[1], 0.23), (1, 0, 0), (0, -1, 0), 0.05, 0.055,
          bar=0.018, th=0.02, name='boot_buckle')
 
 
@@ -775,7 +776,7 @@ def holster():
               lambda x, z=z: z + 0.0325 - 0.065 * (1 - abs(x + 0.2) / w), lambda x, z=z: z + 0.0325 + 0.065 * (1 - abs(x + 0.2) / w),
               lambda x, z: 0.004 + 0.015 * (1 - abs(x + 0.2) / w), th=0.016, nu=4, nv=4, bevel=0.003, name='strap_diamond')
     # the pouch on the outside of the thigh
-    PC = (-1.15, 0.02)
+    PC = (-1.19, 0.02)   # its inner face clear of the thigh straps
     hw, hd, r = 0.075, 0.2, 0.04
     Hp = 2 * (hw - r) + 2 * (hd - r) + math.pi * r
     bwrap('RightLeg', 'Leather', PC, 1.3, 1.76, hw, hd, r, -Hp, Hp, nu=32, nv=4, th=0.025,
@@ -788,7 +789,7 @@ def holster():
     rivet('RightLeg', 'Silver', (PC[0] - hw - 0.05, PC[1], 1.44), (-1, 0, 0), 0.034, flat=0.6)
     for y in (-0.1, 0.14):   # the drop straps up to the slung belt
         sheet('RightLeg', 'Strap', 'left', (1.075, y), -0.03, 0.03, 1.74, 2.02,
-              lambda x, z: 0.0 + 0.06 * clamp((2.0 - z) / 0.25), th=0.018, nu=1, nv=4, bevel=0.003, name='drop_strap')
+              lambda x, z: 0.1 * clamp((2.0 - z) / 0.25), th=0.018, nu=1, nv=4, bevel=0.003, name='drop_strap')
 
 
 def pieces():
@@ -1073,6 +1074,57 @@ def join(prefix):
     return out
 
 
+AXES = {'Hat': ((0, 0), (4.6, 5.2)), 'Torso': ((0, 0), (2.2, 3.8)), 'Capelet': ((0, 0), (2.2, 3.8)), 'Cape': ((0, 0), (0, 3.8)),
+        'Scarf': ((0, 0), (0, 5)), 'LeftArm': ((1.5, 0), (2.3, 3.7)), 'RightArm': ((-1.5, 0), (2.3, 3.7)),
+        'LeftLeg': ((0.5, 0), (0.3, 1.7)), 'RightLeg': ((-0.5, 0), (0.3, 1.7))}
+
+
+def audit(reach=0.06):
+    """how much of each piece is buried: from every vertex, look straight out along its normal; if another
+    piece of the same body part (or the torso's cloth) is within reach, that spot is covered. Prints the
+    pieces more than 15% covered"""
+    from mathutils.bvhtree import BVHTree
+    dg = bpy.context.evaluated_depsgraph_get()
+    geo = []
+    for part, ob in A.PIECES:
+        me = ob.evaluated_get(dg).to_mesh()
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bm.transform(ob.matrix_world)
+        bm.normal_update()
+        geo.append((part, ob.name, bm, BVHTree.FromBMesh(bm)))
+    near = {'Torso': ('Torso', 'Capelet', 'Cape', 'Scarf'), 'Capelet': ('Torso', 'Capelet', 'Cape', 'Scarf'),
+            'Cape': ('Torso', 'Capelet', 'Cape'), 'Scarf': ('Torso', 'Capelet', 'Scarf')}
+    rows = {}
+    for i, (part, name, bm, _) in enumerate(geo):
+        cand = [g for j, g in enumerate(geo) if j != i and g[0] in near.get(part, (part,))]
+        trees = [g[3] for g in cand]
+        by = {}
+        hit = tot = 0
+        c, (z0, z1) = AXES[part]
+        for v in bm.verts:
+            out = v.co - Vector((c[0], c[1], clamp(v.co.z, z0, z1)))
+            if out.length < 1e-6 or v.normal.dot(out.normalized()) < 0.3:
+                continue   # only what faces away from the body can be seen
+            tot += 1
+            o = v.co + v.normal * 0.003
+            for g, t in zip(cand, trees):
+                if t.ray_cast(o, v.normal, reach)[0] is not None:
+                    hit += 1
+                    nm = g[1].split('.')[0]
+                    by[nm] = by.get(nm, 0) + 1
+                    break
+        k = (part, name.split('.')[0])
+        h0, t0, b0 = rows.get(k, (0, 0, {}))
+        for nm, c in by.items():
+            b0[nm] = b0.get(nm, 0) + c
+        rows[k] = (h0 + hit, t0 + tot, b0)
+    for (part, name), (h, t, by) in sorted(rows.items(), key=lambda r: -r[1][0] / max(r[1][1], 1)):
+        if t and h / t > 0.15:
+            top = ', '.join(f'{n} {100 * c / t:.0f}%' for n, c in sorted(by.items(), key=lambda kv: -kv[1])[:3])
+            print(f'AUDIT {part:9s} {name:16s} {100 * h / t:5.1f}% covered  by {top}', flush=True)
+
+
 def build(high=True):
     materials()
     HIGH[0] = False
@@ -1087,6 +1139,9 @@ def build(high=True):
             rows[k] = rows.get(k, 0) + sum(len(p.vertices) - 2 for p in me.polygons)
         for (part, name), n in sorted(rows.items(), key=lambda r: -r[1]):
             print(f'{part:10s} {name:16s} {n}')
+    if STAGE == 'audit':
+        audit()
+        return {}, {}
     low = join(PREFIX)
     if not high:
         return low, {}
@@ -1280,6 +1335,8 @@ def main():
     A.reset()
     objs, highs = build(high=STAGE != 'stats')
     A.PARTS = BODY
+    if STAGE == 'audit':
+        return
     refs = A.load_rig()
     A.PARTS = PARTS
     os.makedirs(OUT, exist_ok=True)
@@ -1293,8 +1350,8 @@ def main():
         sc, cam, cam_d = A.studio()
         sc.cycles.samples = 16
         sc.render.resolution_x = sc.render.resolution_y = 700
-        for name, loc, tgt in (('waist', (0.0, -6.0, 2.6), (0, 0, 2.2)), ('knees', (-0.6, -6.0, 1.4), (0, 0, 1.15)),
-                               ('thigh', (-6.0, -2.5, 1.9), (-0.8, 0, 1.5)), ('backtop', (1.5, 6.0, 4.6), (0.3, 0.3, 3.8))):
+        for name, loc, tgt in (('knees', (-0.6, -6.0, 1.2), (0, 0, 0.8)), ('pauldron', (5.5, -3.5, 4.4), (1.6, 0, 3.6)),
+                               ('thigh', (-6.0, -2.5, 1.9), (-0.8, 0, 1.4)), ('backtop', (2.5, 5.5, 5.0), (0.5, 0.5, 4.2))):
             cam.location = loc
             cam.rotation_euler = (Vector(tgt) - Vector(loc)).to_track_quat('-Z', 'Y').to_euler()
             sc.render.filepath = os.path.join(OUT, f'inspect_{name}.png')

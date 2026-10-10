@@ -87,7 +87,8 @@ with the pip `bpy` module or Blender 4.2+:
 ```
 python build_wanderer.py -- --stage preview   # quick look with live materials
 python build_wanderer.py -- --stage stats     # triangle counts per piece and per mesh
-python build_wanderer.py -- --stage inspect   # close-ups of the belts, knees, thigh and collar
+python build_wanderer.py -- --stage inspect   # close-ups of the knees, pauldron, thigh and collar
+python build_wanderer.py -- --stage audit     # lists any detail that is buried under another piece
 python build_wanderer.py -- --stage all       # bake maps, render previews, export the FBX
 ```
 
