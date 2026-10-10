@@ -1,13 +1,13 @@
 # Dark Knight armour (R6)
 
-Black steel plate with purple metal trim, a purple cloth skirt and hood, and black leather. It's based on
+Satin gunmetal plate with engraved purple trim, a purple cloth skirt and cape, and brown leather. It's based on
 `reference.jpg`, recoloured, and fitted to the R6 body in `r6_rig_body.fbx`.
 
 ## What's in `export/`
 
 | File | What it is |
 |---|---|
-| `ArmorKit.fbx` | Six armour meshes (`Armor_Head`, `Armor_Torso`, `Armor_LeftArm`, `Armor_RightArm`, `Armor_LeftLeg`, `Armor_RightLeg`) plus six `Ref_*` parts: the R6 body they were fitted to |
+| `ArmorKit.fbx` | Seven armour meshes (`Armor_Head`, `Armor_Torso`, `Armor_LeftArm`, `Armor_RightArm`, `Armor_LeftLeg`, `Armor_RightLeg`, and `Armor_Cape`, which welds to the torso) plus six `Ref_*` parts: the R6 body they were fitted to |
 | `Armor_<Part>_Color.png` | Base colour (sRGB) |
 | `Armor_<Part>_Normal.png` | Tangent-space normal map, OpenGL (+Y), which is what Roblox expects |
 | `Armor_<Part>_Roughness.png` | Roughness |

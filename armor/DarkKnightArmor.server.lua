@@ -2,8 +2,8 @@
 	Dark Knight armour for R6 characters.
 
 	Setup (once):
-	  1. Import export/ArmorKit.fbx with the 3D Importer. It comes in as a model holding six
-	     Armor_* MeshParts and six Ref_* parts (the R6 body the armour was fitted to).
+	  1. Import export/ArmorKit.fbx with the 3D Importer. It comes in as a model holding seven
+	     Armor_* MeshParts (the six body parts and the cape) and six Ref_* parts (the R6 body the armour was fitted to).
 	  2. Give each Armor_* part a SurfaceAppearance with its four maps from export/
 	     (ColorMap, NormalMap, RoughnessMap, MetalnessMap), unless the importer already did.
 	  3. Name the model "DarkKnightArmor" and put it in ServerStorage.
@@ -28,14 +28,18 @@ local BODY = {
 	RightArm = "Right Arm",
 	LeftLeg = "Left Leg",
 	RightLeg = "Right Leg",
+	Cape = "Torso",
 }
+-- the reference body part each piece was fitted against (the cape hangs off the torso)
+local REF = { Cape = "Torso" }
 
 -- where each piece sits relative to its body part, read once from the template's reference body
 local offsets = {}
 for key in pairs(BODY) do
 	local armor = TEMPLATE:FindFirstChild("Armor_" .. key)
-	local ref = TEMPLATE:FindFirstChild("Ref_" .. key)
-	assert(armor and ref, "DarkKnightArmor is missing Armor_" .. key .. " or Ref_" .. key)
+	local refKey = REF[key] or key
+	local ref = TEMPLATE:FindFirstChild("Ref_" .. refKey)
+	assert(armor and ref, "DarkKnightArmor is missing Armor_" .. key .. " or Ref_" .. refKey)
 	local offset = ref.CFrame:ToObjectSpace(armor.CFrame)
 	if FLIP then
 		offset = CFrame.Angles(0, math.pi, 0) * offset

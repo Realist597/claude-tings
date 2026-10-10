@@ -4,6 +4,7 @@ Builds every piece procedurally, fitted to the R6 body in r6_rig_body.fbx (1 uni
 the character faces -Y). Pieces are joined into one mesh per body part, so each one welds to a
 single part in Roblox:
     Armor_Head  Armor_Torso  Armor_LeftArm  Armor_RightArm  Armor_LeftLeg  Armor_RightLeg
+    Armor_Cape (its own mesh, welded to the torso)
 
 Surfaces are procedural Cycles materials (blackened steel, purple metal, black leather, purple
 cloth) baked down to PBR maps per mesh for Roblox SurfaceAppearance:
@@ -12,7 +13,8 @@ cloth) baked down to PBR maps per mesh for Roblox SurfaceAppearance:
     blender -b --factory-startup --python build_armor.py -- [--stage preview|bake|all] [--res 1024] [--out DIR]
     (or: python build_armor.py ...  with the pip `bpy` module)
 
-    preview  build the meshes and render preview.png with the live procedural materials (fast)
+    preview    build the meshes and render preview.png with the live procedural materials (fast)
+    timelapse  film the armour being put together piece by piece (build_timelapse.mp4)
     bake     build, UV, bake the maps, render preview.png with the baked maps, export ArmorKit.fbx
 """
 import bpy, bmesh, math, os, sys
@@ -42,7 +44,9 @@ PARTS = {
     'RightArm': ((-1.5, 0, 3), (1, 1, 2)),
     'LeftLeg': ((0.5, 0, 1), (1, 1, 2)),
     'RightLeg': ((-0.5, 0, 1), (1, 1, 2)),
+    'Cape': ((0, 0, 3), None),   # its own mesh (and texture), welded to the torso
 }
+BODY_PARTS = [p for p in PARTS if p != 'Cape']
 
 
 # ------------------------------------------------------------------ scene
@@ -254,6 +258,53 @@ def wrap(part, mat, c, z0, z1, a, b, th0, th1, ex=4.0, th=0.05, nu=40, nv=6, clo
     return slab(part, mat, fn, nu, nv, th, lambda p: (c[0], c[1], p[2]), closed_u=closed, bevel=bevel, name=name, trim=trim)
 
 
+def rr_point(s_, hw, hd, r):
+    """point s_ studs round a rounded rectangle (half-width hw in X, half-depth hd in Y, corner radius
+    r), measured from the front centre (0, -hd), positive toward +X, negative toward -X"""
+    if s_ < 0:
+        x, y = rr_point(-s_, hw, hd, r)
+        return (-x, y)
+    a, b, q = hw - r, hd - r, math.pi * r / 2
+    half = 2 * a + 2 * b + 2 * q
+    if s_ > half:
+        x, y = rr_point(2 * half - s_, hw, hd, r)
+        return (-x, y)
+    for seg in range(5):
+        if seg == 0 and s_ <= a:
+            return (s_, -hd)
+        if seg == 0:
+            s_ -= a
+        if seg == 1 and s_ <= q:
+            p = -math.pi / 2 + s_ / r
+            return (a + r * math.cos(p), -b + r * math.sin(p))
+        if seg == 1:
+            s_ -= q
+        if seg == 2 and s_ <= 2 * b:
+            return (hw, -b + s_)
+        if seg == 2:
+            s_ -= 2 * b
+        if seg == 3 and s_ <= q:
+            p = s_ / r
+            return (a + r * math.cos(p), b + r * math.sin(p))
+        if seg == 3:
+            s_ -= q
+    return (a - s_, hd)
+
+
+def bwrap(part, mat, c, z0, z1, hw, hd, r, s0, s1, th=0.05, nu=40, nv=6, extra=None, bevel=0.01, name='bwrap', trim=None):
+    """plate wrapped round a rounded box (half-sizes hw, hd, corner radius r, numbers or functions of z)
+    about the vertical axis through c, from s0 to s1 studs round from the front centre. z0, z1 and
+    extra(s, z) (outward offset) take that perimeter position, so ridges and peaks are placed in studs"""
+    def fn(u, v):
+        s_ = s0 + (s1 - s0) * u
+        lo, hi = val(z0, s_), val(z1, s_)
+        z = lo + (hi - lo) * v
+        e = extra(s_, z) if extra else 0.0
+        x, y = rr_point(s_, val(hw, z) + e, val(hd, z) + e, r)
+        return (c[0] + x, c[1] + y, z)
+    return slab(part, mat, fn, nu, nv, th, lambda p: (c[0], c[1], p[2]), bevel=bevel, name=name, trim=trim)
+
+
 FACES = {   # outward normal, across
     'front': ((0, -1, 0), (1, 0, 0)),
     'back': ((0, 1, 0), (-1, 0, 0)),
@@ -459,9 +510,36 @@ def torso():
             sheet('Torso', 'PurplePolish', face, (1.0, 0), -0.52, 0.52, lambda x, zb=zb: zb + 0.08 * (1 - (x / 0.52) ** 2), zt,
                   lambda x, z, zt=zt, f=f: 0.04 + f + 0.24 * (zt - z) + 0.05 * (1 - (x / 0.55) ** 2), th=0.05, nu=10,
                   nv=4, name='hip_flap', trim=T('blr', w=0.04, th=0.025, mat='Steel'))
-    # the hood's drape over the upper back
-    sheet('Torso', 'Cloth', 'back', (0.5, 0), -0.62, 0.62, lambda x: 3.45 + 0.85 * abs(x), 4.02,
-          lambda x, z: hb(x, z) + 0.1 + 0.08 * (z - 3.45), th=0.035, nu=12, nv=6, bevel=0.006, name='drape')
+    # cape: tucked under the collar, falling in deep folds to the ankles, widening as it goes, with an
+    # engraved purple hem and the cross embroidered on its back
+    TOP = 3.95
+    k_ = lambda z: (TOP - z) / 3.8   # 0 at the shoulders, 1 at the hem
+
+    def cape_y(x, z):
+        k = max(0.0, k_(z))
+        return 0.86 + 0.3 * k ** 1.2 + 0.08 * k * math.sin(x * 8.5 + 0.6) + 0.025 * k * math.sin(x * 21 + 1.3)
+    width = lambda z: 0.86 + 0.36 * max(0.0, k_(z))
+    hem = lambda xn: 0.16 + 0.1 * xn * xn
+
+    def cape(u, v):
+        xn = 2 * u - 1
+        z = hem(xn) + (TOP - hem(xn)) * v
+        x = xn * width(z)
+        return (x, cape_y(x, z), z)
+    slab('Cape', 'Cloth', cape, 40, 22, 0.03, lambda p: (p[0], p[1] - 1, p[2]), bevel=0.006, name='cape',
+         trim=T('blr', w=0.06, th=0.022))
+
+    def on_cape(x0, x1, bot, top):   # a patch lying on the cape's outer face
+        def fn(u, v):
+            x = x0 + (x1 - x0) * u
+            z = bot(x) + (top(x) - bot(x)) * v
+            return (x, cape_y(x, z) + 0.03, z)
+        return fn
+    hb_ = lambda x: 0.03 + 0.09 * (1 - abs(x) / 0.62) ** 0.6
+    slab('Cape', 'Embroidery', on_cape(-0.62, 0.62, lambda x: 3.05 - hb_(x), lambda x: 3.05 + hb_(x) * 0.85), 24, 2, 0.012,
+         lambda p: (p[0], p[1] - 1, p[2]), bevel=0.003, name='cape_cross')
+    slab('Cape', 'Embroidery', on_cape(-0.15, 0.15, lambda x: 2.1 + 4.0 * abs(x), lambda x: 3.6 - 1.2 * abs(x)), 6, 14, 0.016,
+         lambda p: (p[0], p[1] - 1, p[2]), bevel=0.003, name='cape_cross')
 
 
 def arm():
@@ -511,37 +589,55 @@ def arm():
 
 
 def leg():
-    """the left leg (+X); the right one is its mirror"""
-    cx = 0.52
+    """the left leg (+X); the right one is its mirror. Angular, as on the concept: boxy plates with
+    soft corners, a sharp ridge down the front, flat sides and pointed edges"""
+    cx = 0.5
+    tri = lambda s_, w: max(0.0, 1 - abs(s_) / w)   # 1 at the front centre falling to 0 at +-w studs
+    R = 0.13
+    # open on the inner side (toward the other leg): from just round the front-inner corner, over the
+    # front, the outer side and the back, to just round the back-inner corner
+    def span(hw, hd):
+        a, b, q = hw - R, hd - R, math.pi * R / 2
+        return -(a + q + 0.04), 2 * a + 2 * b + 2 * q + a + q + 0.04
     wrap('LeftLeg', 'Fabric', (0.5, 0), 0.3, 2.0, 0.535, 0.545, -180, 180, ex=8, th=0.03, nu=30, nv=3, bevel=0.006, closed=True,
          extra=lambda d, z: 0.012 * math.sin(math.radians(d) * 7 + z * 14), name='trousers')
-    # cuisse over the front of the thigh
-    wrap('LeftLeg', 'Steel', (cx, 0), 1.36, 1.92, 0.585, 0.585, -150, -25, ex=4.0, th=0.05, nu=20, nv=4, name='cuisse',
-         trim=T('btlr', w=0.05))
-    # knee cop: a rounded cap, a side fan and a purple boss
-    K = lambda z: 0.6 + 0.11 * math.sin(math.pi * min(max((z - 0.9) / 0.5, 0), 1))
-    wrap('LeftLeg', 'PurplePolish', (cx, 0), lambda d: 0.9 - 0.06 * max(0.0, -math.sin(math.radians(d))) ** 2, 1.4, K,
-         lambda z: K(z) + 0.02, -160, -20, ex=3.0, th=0.055, nu=24, nv=6, name='knee',
-         trim=T('bt', w=0.035, th=0.022, mat='Steel'))
-    r = 0.2
-    sheet('LeftLeg', 'PurplePolish', 'right', (1.0 - 0.48, 0), -r, r, lambda x: 1.15 - math.sqrt(max(r * r - x * x, 0)),
-          lambda x: 1.15 + math.sqrt(max(r * r - x * x, 0)),
-          lambda x, z: 0.1 + 0.06 * max(0.0, 1 - (x * x + (z - 1.15) ** 2) / (r * r)), th=0.045, nu=10, nv=6,
-          name='knee_fan', trim=T('bt', w=0.035, th=0.022, mat='Steel'))
-    rivet('LeftLeg', 'Steel', (cx, -0.77, 1.16), (0, -1, 0), 0.06, flat=0.5)
-    # greave: peaked at the front, keeled down the shin, trimmed top and bottom
-    G = lambda z: 0.56 + 0.04 * math.sin(math.pi * (z - 0.3) / 0.65)
-    keel = lambda d, z: 0.05 * max(0.0, -math.sin(math.radians(d))) ** 8
-    wrap('LeftLeg', 'Steel', (cx, 0), 0.3, lambda d: 0.95 + 0.1 * max(0.0, -math.sin(math.radians(d))) ** 3, G,
-         lambda z: G(z) + 0.01, -150, 150, ex=4.5, th=0.05, nu=40, nv=6, extra=keel, name='greave', trim=T('tlr', w=0.055))
-    # boot: leather shaft, steel toe, purple disc on the outer ankle
-    wrap('LeftLeg', 'Leather', (cx, 0), 0.0, 0.36, 0.575, 0.585, -150, 150, ex=5, th=0.045, nu=36, nv=3, name='boot')
-    wrap('LeftLeg', 'Leather', (cx, 0), -0.0, 0.06, 0.6, 0.62, -150, 150, ex=5, th=0.03, nu=36, nv=1, name='sole')
-    for k, (zb, zt) in enumerate(((0.2, 0.34), (0.11, 0.25), (0.03, 0.16))):
-        sheet('LeftLeg', 'Steel', 'front', (0.5, cx), -0.47, 0.47, zb, zt,
-              lambda x, z, k=k, zt=zt: 0.08 + 0.05 * k + 0.12 * (zt - z) * (1 - (x / 0.5) ** 4), th=0.045, nu=10, nv=2,
-              name='sabaton', trim=T('b', w=0.035, th=0.025))
-    rivet('LeftLeg', 'Purple', (cx + 0.63, 0, 0.2), (1, 0, 0), 0.1, flat=0.5)
+    # cuisse: a ridged plate over the front and outside of the thigh, pointed at the bottom
+    bwrap('LeftLeg', 'Steel', (cx, 0), lambda s_: 1.52 - 0.1 * tri(s_, 0.4), 1.95, 0.575, 0.58, R, -0.44, 0.74, nu=22, nv=4,
+          extra=lambda s_, z: 0.06 * tri(s_, 0.25), name='cuisse', trim=T('btlr', w=0.05))
+    # knee: a lame above and below a peaked purple cop, and a kite-shaped wing on the outside
+    for zb, zt, pk in ((1.34, 1.52, 0.0), (0.8, 0.96, 0.06)):
+        bwrap('LeftLeg', 'Steel', (cx, 0), lambda s_, zb=zb, pk=pk: zb - pk * tri(s_, 0.35), zt, 0.585, 0.59, R, -0.44, 0.66,
+              nu=20, nv=2, extra=lambda s_, z: 0.05 * tri(s_, 0.25), name='knee_lame', trim=T('b', w=0.04, th=0.025))
+    bwrap('LeftLeg', 'PurplePolish', (cx, 0), lambda s_: 0.94 - 0.1 * tri(s_, 0.3), lambda s_: 1.34 + 0.08 * tri(s_, 0.3),
+          0.62, 0.63, R, -0.3, 0.3, nu=14, nv=6,
+          extra=lambda s_, z: 0.1 * tri(s_, 0.3) + 0.03 * math.sin(math.pi * min(max((z - 0.84) / 0.58, 0.0), 1.0)),
+          name='knee', trim=T('btlr', w=0.032, th=0.022, mat='Steel'))
+    kw = 0.2
+    sheet('LeftLeg', 'PurplePolish', 'right', (1.0, 0), -kw, kw, lambda x: 1.14 - 0.19 * (1 - abs(x) / kw),
+          lambda x: 1.14 + 0.19 * (1 - abs(x) / kw), lambda x, z: 0.11 + 0.05 * (1 - abs(x) / kw), th=0.045, nu=8, nv=4,
+          name='knee_wing', trim=T('bt', w=0.03, th=0.02, mat='Steel'))
+    rivet('LeftLeg', 'Steel', (cx, -(0.63 + 0.1 + 0.07), 1.14), (0, -1, 0), 0.05, flat=0.55)
+    # greave: flat-sided, tapering to the ankle, ridged down the shin, peaked under the knee, flared over the boot
+    G = lambda z: 0.55 + 0.04 * (z - 0.3) / 0.66
+    g0, g1 = span(0.57, 0.57)
+    bwrap('LeftLeg', 'Steel', (cx, 0), 0.3, lambda s_: 0.94 + 0.14 * tri(s_, 0.32), G, lambda z: G(z) + 0.01, R, g0, g1,
+          nu=56, nv=6, extra=lambda s_, z: 0.08 * tri(s_, 0.2) + 0.03 * max(0.0, (0.42 - z) / 0.12),
+          name='greave', trim=T('tlr', w=0.05))
+    # boot: a squared leather shaft and sole, three ridged sabaton lames and a pointed toe cap
+    bwrap('LeftLeg', 'Leather', (cx, 0), 0.04, 0.38, 0.565, 0.57, R, g0, g1, nu=48, nv=3, name='boot')
+    bwrap('LeftLeg', 'Leather', (cx, -0.03), 0.0, 0.06, 0.59, 0.61, R, g0, g1, nu=48, nv=1, name='sole')
+    for k, (zb, zt) in enumerate(((0.24, 0.38), (0.14, 0.28), (0.05, 0.19))):
+        A = lambda z, k=k, zt=zt: 0.585 + 0.025 * k + 0.1 * (zt - z)
+        bwrap('LeftLeg', 'Steel', (cx, 0), zb, zt, A, lambda z, A=A: A(z) + 0.01, R, -0.52, 0.52, nu=18, nv=2,
+              extra=lambda s_, z: 0.045 * tri(s_, 0.3), name='sabaton', trim=T('b', w=0.03, th=0.022))
+    sheet('LeftLeg', 'Steel', 'front', (0.5, cx), -0.42, 0.42, 0.05, 0.15,
+          lambda x, z: 0.15 + 0.12 * (1 - abs(x) / 0.42) * (1 - (z - 0.05) / 0.1 * 0.6), th=0.045, nu=8, nv=2, name='toe',
+          trim=T('b', w=0.025, th=0.018))
+    # a purple diamond on the outer ankle
+    aw = 0.11
+    sheet('LeftLeg', 'PurplePolish', 'right', (1.0, 0), -aw, aw, lambda x: 0.6 - 0.11 * (1 - abs(x) / aw),
+          lambda x: 0.6 + 0.11 * (1 - abs(x) / aw), lambda x, z: 0.1 + 0.03 * (1 - abs(x) / aw), th=0.035, nu=6, nv=3,
+          name='ankle_diamond')
 
 
 # ------------------------------------------------------------------ materials
@@ -831,6 +927,7 @@ def materials():
     mk_material('Leather', 'leather', '#24150d', '#2e1b11', '#4a2e1e', (0.5, 0.72), 0.0)
     mk_material('Cloth', 'cloth', '#1a0830', '#230b40', '#341457', (0.78, 0.95), 0.0)
     mk_material('Fabric', 'cloth', '#121216', '#18181e', '#26262e', (0.8, 0.95), 0.0)
+    mk_material('Embroidery', 'cloth', '#6b33b5', '#7a3fc6', '#a57de0', (0.55, 0.7), 0.0)
 
 
 # ------------------------------------------------------------------ assembly
@@ -1048,15 +1145,15 @@ def load_rig():
         o.data.materials.clear()
         o.data.materials.append(body)
         c = sum((o.matrix_world @ Vector(v) for v in o.bound_box), Vector()) / 8
-        part = min(PARTS, key=lambda p: (Vector(PARTS[p][0]) - c).length)
+        part = min(BODY_PARTS, key=lambda p: (Vector(PARTS[p][0]) - c).length)
         o.name = 'Ref_' + part
         named[part] = o
     return named
 
 
-def preview(path, samples=48):
+def studio():
+    """the grey studio the previews and the timelapse are shot in: world, three area lights, a camera"""
     sc = bpy.context.scene
-    sc.cycles.samples = samples
     sc.cycles.use_denoising = True
     sc.render.resolution_x, sc.render.resolution_y = 560, 760
     sc.view_settings.view_transform = 'AgX'
@@ -1103,6 +1200,12 @@ def preview(path, samples=48):
     cam = bpy.data.objects.new('cam', cam_d)
     sc.collection.objects.link(cam)
     sc.camera = cam
+    return sc, cam, cam_d
+
+
+def preview(path, samples=48):
+    sc, cam, cam_d = studio()
+    sc.cycles.samples = samples
     shots = []
     for i, (az, el) in enumerate(((0, 8), (35, 10), (180, 8))):
         a = math.radians(az - 90)
@@ -1141,6 +1244,51 @@ def preview(path, samples=48):
     print('PREVIEW', path, flush=True)
 
 
+def timelapse(path, build_frames=200, hold_frames=72, fps=24, size=540, samples=10):
+    """film the armour being put together: every plate, trim, bead and rivet appears in the order the
+    script makes it (right-hand pieces just after their left-hand twins), the camera circling as it goes,
+    then a full turn round the finished suit. Frames go to <path>_frames/, the video to path (MP4)."""
+    import subprocess
+    materials()
+    HIGH[0] = True
+    pieces()
+    HIGH[0] = False
+    for ob in [o for o in bpy.data.objects if o.name.startswith('cut')]:
+        ob.hide_render = True
+    left = [ob for p, ob in PIECES if p.startswith('Left')]
+    twins = dict(zip(left, [ob for p, ob in PIECES if p.startswith('Right')]))
+    order = []
+    for p, ob in PIECES:
+        if p.startswith('Right'):
+            continue
+        order.append(ob)
+        if ob in twins:
+            order.append(twins[ob])
+    load_rig()
+    sc, cam, cam_d = studio()
+    sc.cycles.samples = samples
+    sc.render.use_persistent_data = True
+    sc.render.resolution_x = sc.render.resolution_y = size
+    cam_d.lens = 70
+    frames = os.path.splitext(path)[0] + '_frames'
+    os.makedirs(frames, exist_ok=True)
+    total = build_frames + hold_frames
+    for f in range(total):
+        shown = len(order) if f >= build_frames else int(len(order) * (f + 1) / build_frames)
+        for i, ob in enumerate(order):
+            ob.hide_render = i >= shown
+        az = -35 + 70 * f / build_frames if f < build_frames else 35 + 360 * (f - build_frames) / hold_frames
+        a = math.radians(az - 90)
+        cam.location = (15 * math.cos(a), 15 * math.sin(a), 2.6 + 15 * math.sin(math.radians(9)))
+        cam.rotation_euler = (Vector((0, 0, 2.55)) - cam.location).to_track_quat('-Z', 'Y').to_euler()
+        sc.render.filepath = os.path.join(frames, f'frame_{f:04d}.png')
+        bpy.ops.render.render(write_still=True)
+        print('FRAME', f + 1, '/', total, flush=True)
+    subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-framerate', str(fps), '-i', os.path.join(frames, 'frame_%04d.png'),
+                    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '20', path], check=True)
+    print('TIMELAPSE', path, flush=True)
+
+
 def export(objs, refs):
     for o in bpy.data.objects:
         o.select_set(False)
@@ -1154,6 +1302,10 @@ def export(objs, refs):
 
 def main():
     reset()
+    if STAGE == 'timelapse':
+        os.makedirs(OUT, exist_ok=True)
+        timelapse(os.path.join(OUT, 'build_timelapse.mp4'))
+        return
     objs, highs = build(high=STAGE != 'stats')
     refs = load_rig()
     os.makedirs(OUT, exist_ok=True)
