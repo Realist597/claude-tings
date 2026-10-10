@@ -128,12 +128,12 @@ def material(name, kind, zmax, axis='Z'):
         rough = op('SUBTRACT', rng(soft, 0, 1, 0.3, 0.38), op('MULTIPLY', edge, 0.1))
         metal, emit = 0.85, 0.0
     else:
-        base = mix(rng(along, 0.0, 0.55), lin('#33087a'), lin('#7322f0'))
-        base = mix(rng(along, 0.55, 1.0), base, lin('#a85cff'))
-        col = mix(op('MULTIPLY', edge, 0.5), base, lin('#cfa6ff'))
+        base = mix(rng(along, 0.0, 0.55), lin('#1c043f'), lin('#3c0d8c'))
+        base = mix(rng(along, 0.55, 1.0), base, lin('#5e1fbd'))
+        col = mix(op('MULTIPLY', edge, 0.45), base, lin('#8a55d4'))
         col = mix(op('MULTIPLY', op('SUBTRACT', 1.0, cav), 0.6), col, lin('#1a0636'))
         rough = rng(soft, 0, 1, 0.22, 0.3)
-        metal, emit = 0.3, 0.8
+        metal, emit = 0.35, 0.7
     nrm = N.new('ShaderNodeBevel')   # rounds the hard edges in the normal map so they catch a clean highlight
     nrm.inputs['Radius'].default_value = 0.0015
     nrm.samples = 16
@@ -154,7 +154,7 @@ def material(name, kind, zmax, axis='Z'):
     L.new(nrm.outputs['Normal'], bsdf.inputs['Normal'])
     if emit:
         L.new(tags['COL'].outputs[0], bsdf.inputs['Emission Color'])
-        bsdf.inputs['Emission Strength'].default_value = 1.0
+        bsdf.inputs['Emission Strength'].default_value = 0.9
     return m
 
 
@@ -288,7 +288,7 @@ def bake(ob, name):
     nt.links.new(t['Color'].outputs[0], mul.inputs[6])
     nt.links.new(t['Emissive'].outputs[0], mul.inputs[7])
     nt.links.new(mul.outputs[2], b.inputs['Emission Color'])
-    b.inputs['Emission Strength'].default_value = 1.0
+    b.inputs['Emission Strength'].default_value = 0.9
     for p in ob.data.polygons:
         p.material_index = 0
     ob.data.materials.clear()
@@ -330,6 +330,140 @@ def preview(path, objs, samples=48):
     print('PREVIEW', path, flush=True)
 
 
+# ------------------------------------------------------------------ the draw rig
+
+DRAW = 0.2   # how far the Pull bone draws the string back at full draw (world units; the bow is ~0.67 tall)
+
+
+def rig(bow):
+    """an armature that draws the bow from one control bone:
+         Root                      the grip; stays put
+         Limb_Upper_1..3           up the upper limb, grip to tip; IK chain reaching for Tip_Upper
+         Limb_Lower_1..3           the same down the lower limb
+         Pull                      the nock point on the string; drag it back (+X) to draw
+         Tip_Upper / Tip_Lower     IK targets the limb tips reach for; they follow Pull (in Blender) by a
+                                   constraint, so pulling flexes the limbs
+       The string isn't made of stretching bones (Roblox bones can't scale): each string vertex blends between
+       its limb tip and Pull by how far along it sits, so it pulls into a clean V in Blender and in Roblox alike."""
+    sc = bpy.context.scene
+    for o in bpy.data.objects:
+        o.select_set(False)
+    # the meshes in world units, so the bones line up with them
+    for o in (bow, bpy.data.objects['arrow']):
+        o.data.transform(o.matrix_world)
+        o.matrix_world.identity()
+    vs = [v.co.copy() for v in bow.data.vertices]
+    ad = bpy.data.armatures.new('BowRig')
+    arm = bpy.data.objects.new('BowRig', ad)
+    sc.collection.objects.link(arm)
+    up = [(-0.045, 0.06), (-0.003, 0.15), (0.03, 0.235), (0.1, 0.31)]   # limb centreline, grip to tip (x, z)
+    # the string: the long, hair-thin loose part
+    string = set()
+    for part in loose_parts(bow.data):
+        xs = [vs[i].x for i in part]
+        zs = [vs[i].z for i in part]
+        if max(xs) - min(xs) < 0.004 and max(zs) - min(zs) > 0.5:
+            string |= part
+    string_x = sum(vs[i].x for i in string) / len(string)
+    top_z = max(abs(vs[i].z) for i in string)
+    with bpy.context.temp_override(active_object=arm, object=arm, selected_objects=[arm], selected_editable_objects=[arm]):
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.mode_set(mode='EDIT')
+        eb = ad.edit_bones
+        root = eb.new('Root')
+        root.head, root.tail = (-0.03, 0, -0.06), (-0.03, 0, 0.06)
+        for side, sg in (('Upper', 1), ('Lower', -1)):
+            parent = root
+            for k in range(3):
+                b = eb.new(f'Limb_{side}_{k + 1}')
+                b.head = (up[k][0], 0, sg * up[k][1])
+                b.tail = (up[k + 1][0], 0, sg * up[k + 1][1])
+                b.parent = parent
+                b.use_connect = k > 0
+                parent = b
+            t = eb.new(f'Tip_{side}')
+            t.head = (up[-1][0], 0, sg * up[-1][1])
+            t.tail = (up[-1][0] + 0.03, 0, sg * up[-1][1])
+            t.parent = root
+            t.use_deform = False
+        pull = eb.new('Pull')
+        pull.head, pull.tail = (string_x, 0, 0), (string_x + 0.05, 0, 0)
+        pull.parent = root
+        bpy.ops.object.mode_set(mode='POSE')
+        pb = arm.pose.bones
+        for side, sg in (('Upper', 1), ('Lower', -1)):
+            ik = pb[f'Limb_{side}_3'].constraints.new('IK')
+            ik.target, ik.subtarget, ik.chain_count = arm, f'Tip_{side}', 3
+            # as the string comes back the tips swing toward the archer and in toward the grip
+            tr = pb[f'Tip_{side}'].constraints.new('TRANSFORM')
+            tr.target, tr.subtarget = arm, 'Pull'
+            tr.target_space = tr.owner_space = 'LOCAL'
+            tr.map_from, tr.map_to = 'LOCATION', 'LOCATION'
+            tr.from_min_y, tr.from_max_y = 0.0, DRAW          # Pull's local +Y is world +X, back toward the archer
+            tr.map_to_y_from = 'Y'
+            tr.map_to_z_from = 'Y'
+            tr.to_min_y, tr.to_max_y = 0.0, DRAW * 0.28        # tip's local +Y is world +X too
+            tr.to_min_z, tr.to_max_z = 0.0, -DRAW * 0.12 * sg  # and its local +Z is world +Z: in toward the grip
+        bpy.ops.object.mode_set(mode='OBJECT')
+    # weights
+    groups = {n: bow.vertex_groups.new(name=n) for n in ['Root', 'Pull'] + [f'Limb_{s}_{k}' for s in ('Upper', 'Lower') for k in (1, 2, 3)]}
+    edges_z = [0.06, 0.15, 0.235]       # where Root hands over to Limb_1, Limb_1 to 2, 2 to 3
+    blend = 0.025
+    def limb_weights(z):
+        """by height along the limb, blending across each joint"""
+        a = abs(z)
+        side = 'Upper' if z >= 0 else 'Lower'
+        names = ['Root', f'Limb_{side}_1', f'Limb_{side}_2', f'Limb_{side}_3']
+        w = {}
+        for i, n in enumerate(names):
+            lo = edges_z[i - 1] if i else -1.0
+            hi = edges_z[i] if i < 3 else 9.0
+            f = min(1.0, max(0.0, (a - lo + blend) / (2 * blend))) * min(1.0, max(0.0, (hi - a + blend) / (2 * blend)))
+            if f > 0:
+                w[n] = f
+        t = sum(w.values())
+        return {n: x / t for n, x in w.items()}
+    for i, v in enumerate(vs):
+        if i in string:
+            f = 1 - abs(v.z) / top_z                                 # 1 at the nock point, 0 at the tip
+            tip = 'Limb_Upper_3' if v.z >= 0 else 'Limb_Lower_3'
+            ws = {'Pull': f, tip: 1 - f}
+        else:
+            ws = limb_weights(v.z)
+        for n, x in ws.items():
+            if x > 1e-4:
+                groups[n].add([i], x, 'REPLACE')
+    bow.parent = arm
+    md = bow.modifiers.new('rig', 'ARMATURE')
+    md.object = arm
+    return arm
+
+
+def draw_action(arm):
+    """a Draw animation: pull back, hold, release with a little twang, settle -- baked from the IK so it
+    plays anywhere (Roblox doesn't import Blender constraints)"""
+    sc = bpy.context.scene
+    sc.render.fps = 30
+    sc.frame_start, sc.frame_end = 1, 60
+    pull = arm.pose.bones['Pull']
+    for f, y in ((1, 0.0), (26, DRAW), (42, DRAW), (45, -0.03), (49, 0.012), (53, -0.004), (60, 0.0)):
+        pull.location = (0, y, 0)
+        pull.keyframe_insert('location', frame=f)
+    arm.animation_data.action.name = 'Draw_IK'
+    for o in bpy.data.objects:
+        o.select_set(False)
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    with bpy.context.temp_override(active_object=arm, object=arm, selected_objects=[arm], selected_editable_objects=[arm]):
+        bpy.ops.object.mode_set(mode='POSE')
+        bpy.ops.pose.select_all(action='SELECT')
+        bpy.ops.nla.bake(frame_start=1, frame_end=60, only_selected=True, visual_keying=True, clear_constraints=False,
+                         use_current_action=False, bake_types={'POSE'})
+        bpy.ops.object.mode_set(mode='OBJECT')
+    arm.animation_data.action.name = 'Draw'
+    return arm.animation_data.action
+
+
 def main():
     bpy.ops.wm.read_factory_settings(use_empty=True)
     sc = bpy.context.scene
@@ -347,13 +481,37 @@ def main():
     if STAGE == 'preview':
         preview(os.path.join(OUT, 'preview.png'), [bow, arrow], samples=32)
         return
+    if STAGE == 'rigtest':   # the rig at rest and at full draw
+        arm = rig(bow)
+        bpy.data.objects.remove(arrow)
+        sc = bpy.context.scene
+        preview(os.path.join(OUT, 'rigtest_0.png'), [bow], samples=16)   # sets up lights and the camera
+        cam = sc.camera
+        cam.location = Vector((0.12, -2.2, 0.0))
+        cam.rotation_euler = (Vector((0.12, 0, 0)) - cam.location).to_track_quat('-Z', 'Y').to_euler()
+        for i, y in enumerate((0.0, DRAW)):
+            arm.pose.bones['Pull'].location = (0, y, 0)
+            bpy.context.view_layer.update()
+            sc.render.filepath = os.path.join(OUT, f'rigtest_pose{i}.png')
+            bpy.ops.render.render(write_still=True)
+        return
     bake(bow, 'Bow')
     bake(arrow, 'Arrow')
     preview(os.path.join(OUT, 'preview.png'), [bow, arrow])
+    arm = rig(bow)
+    live = arm.animation_data.action if arm.animation_data else None
+    draw = draw_action(arm)
+    bpy.context.scene.frame_set(1)
     for o in bpy.data.objects:
-        o.select_set(o in (bow, arrow))
-    bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'NewBow.fbx'), use_selection=True, object_types={'MESH'},
-                             mesh_smooth_type='FACE', use_tspace=True, path_mode='STRIP')
+        o.select_set(o in (bow, arrow, arm))
+    bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'NewBow.fbx'), use_selection=True,
+                             object_types={'MESH', 'ARMATURE'}, mesh_smooth_type='FACE', use_tspace=True,
+                             path_mode='STRIP', add_leaf_bones=False, armature_nodetype='NULL',
+                             bake_anim=True, bake_anim_use_all_actions=False, bake_anim_use_nla_strips=False)
+    # the .blend keeps the live IK rig (pose Pull to draw) and both actions
+    arm.animation_data.action = bpy.data.actions.get('Draw_IK')
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, 'NewBow_rig.blend'), compress=True)
+    print('SAVED', os.path.join(OUT, 'NewBow_rig.blend'), flush=True)
     print('EXPORTED', os.path.join(OUT, 'NewBow.fbx'), flush=True)
 
 
