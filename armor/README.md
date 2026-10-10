@@ -7,7 +7,7 @@ Satin gunmetal plate with engraved purple trim, a purple cloth skirt and cape, a
 
 | File | What it is |
 |---|---|
-| `ArmorKit.fbx` | Seven armour meshes (`Armor_Head`, `Armor_Torso`, `Armor_LeftArm`, `Armor_RightArm`, `Armor_LeftLeg`, `Armor_RightLeg`, and `Armor_Cape`, which welds to the torso) plus six `Ref_*` parts: the R6 body they were fitted to |
+| `ArmorKit.fbx` | Eight armour meshes (`Armor_Head`, `Armor_Torso`, `Armor_LeftArm`, `Armor_RightArm`, `Armor_LeftLeg`, `Armor_RightLeg`, plus `Armor_Cape` and `Armor_Tabard`, which weld to the torso and have bones), their two armatures, and six `Ref_*` parts: the R6 body they were fitted to |
 | `Armor_<Part>_Color.png` | Base colour (sRGB) |
 | `Armor_<Part>_Normal.png` | Tangent-space normal map, OpenGL (+Y), which is what Roblox expects |
 | `Armor_<Part>_Roughness.png` | Roughness |
@@ -22,13 +22,16 @@ Every mesh stays under Roblox's 20,000-triangle limit, and every texture is 1024
 2. **Textures:** select each `Armor_*` MeshPart and add a **SurfaceAppearance** if the importer didn't make one.
    Set its `ColorMap`, `NormalMap`, `RoughnessMap` and `MetalnessMap` to that part's four PNGs.
 3. **Store it:** rename the model to `DarkKnightArmor` and move it into **ServerStorage**.
-4. **Script:** put `DarkKnightArmor.server.lua` in **ServerScriptService** as a Script.
+4. **Scripts:** put `DarkKnightArmor.server.lua` in **ServerScriptService** as a Script, and `ArmorClothSway.client.lua` in
+   **StarterPlayer → StarterPlayerScripts** as a LocalScript. The second one moves the cape and front panel bones: the cape
+   streams back as you run and sways when standing, and the front panel flaps with the legs.
 
 Players now spawn wearing the armour. Each piece is welded to its body part, so it moves with R6 animations.
 Hats and hair are removed so they don't poke through the helm. Turn that off with `HIDE_ACCESSORIES`
 in the script.
 
-If the armour comes in facing backwards, set `FLIP = true` in the script.
+If the armour comes in facing backwards, set `FLIP = true` in the script. If a cloth piece swings into the body instead
+of away from it, flip `CAPE_SIGN` or `TABARD_SIGN` in `ArmorClothSway.client.lua`.
 
 ## Rebuilding
 

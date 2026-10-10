@@ -2,12 +2,14 @@
 	Dark Knight armour for R6 characters.
 
 	Setup (once):
-	  1. Import export/ArmorKit.fbx with the 3D Importer. It comes in as a model holding seven
-	     Armor_* MeshParts (the six body parts and the cape) and six Ref_* parts (the R6 body the armour was fitted to).
+	  1. Import export/ArmorKit.fbx with the 3D Importer. It comes in as a model holding eight
+	     Armor_* MeshParts (the six body parts, the cape and the front panel; those two have bones)
+	     and six Ref_* parts (the R6 body the armour was fitted to).
 	  2. Give each Armor_* part a SurfaceAppearance with its four maps from export/
 	     (ColorMap, NormalMap, RoughnessMap, MetalnessMap), unless the importer already did.
 	  3. Name the model "DarkKnightArmor" and put it in ServerStorage.
-	  4. Put this script in ServerScriptService.
+	  4. Put this script in ServerScriptService, and ArmorClothSway.client.lua in
+	     StarterPlayer > StarterPlayerScripts so the cape and front panel move.
 
 	Every player then spawns wearing it. To hand it out yourself instead, set EQUIP_ON_SPAWN to
 	false and call _G.EquipDarkKnight(character) from another server script.
@@ -29,9 +31,10 @@ local BODY = {
 	LeftLeg = "Left Leg",
 	RightLeg = "Right Leg",
 	Cape = "Torso",
+	Tabard = "Torso",
 }
--- the reference body part each piece was fitted against (the cape hangs off the torso)
-local REF = { Cape = "Torso" }
+-- the reference body part each piece was fitted against (the cloth hangs off the torso)
+local REF = { Cape = "Torso", Tabard = "Torso" }
 
 -- where each piece sits relative to its body part, read once from the template's reference body
 local offsets = {}

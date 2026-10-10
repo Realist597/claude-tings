@@ -4,7 +4,7 @@ Builds every piece procedurally, fitted to the R6 body in r6_rig_body.fbx (1 uni
 the character faces -Y). Pieces are joined into one mesh per body part, so each one welds to a
 single part in Roblox:
     Armor_Head  Armor_Torso  Armor_LeftArm  Armor_RightArm  Armor_LeftLeg  Armor_RightLeg
-    Armor_Cape (its own mesh, welded to the torso)
+    Armor_Cape  Armor_Tabard (cloth with bones, each welded to the torso)
 
 Surfaces are procedural Cycles materials (blackened steel, purple metal, black leather, purple
 cloth) baked down to PBR maps per mesh for Roblox SurfaceAppearance:
@@ -46,9 +46,10 @@ PARTS = {
     'RightArm': ((-1.5, 0, 3), (1, 1, 2)),
     'LeftLeg': ((0.5, 0, 1), (1, 1, 2)),
     'RightLeg': ((-0.5, 0, 1), (1, 1, 2)),
-    'Cape': ((0, 0, 3), None),   # its own mesh (and texture), welded to the torso
+    'Cape': ((0, 0, 3), None),     # cloth with bones: its own mesh (and texture), welded to the torso
+    'Tabard': ((0, 0, 3), None),   # the front cloth panel, likewise
 }
-BODY_PARTS = [p for p in PARTS if p != 'Cape']
+BODY_PARTS = [p for p in PARTS if p not in ('Cape', 'Tabard')]
 
 
 # ------------------------------------------------------------------ scene
@@ -449,10 +450,12 @@ def torso():
     hf = lambda x, z: 0.06 + 0.17 * chest(z) * (1 - 0.55 * x * x) + 0.05 * max(0.0, 1 - abs(x) / 0.5)   # breast, keeled
     hb = lambda x, z: 0.06 + 0.1 * chest(z) * (1 - 0.5 * x * x)
     bot = lambda x: 2.4 + 0.32 * abs(x)
-    # black padding under everything, so the gaps between plates read as shadow, not bare body
-    for face in ('front', 'back'):
-        sheet('Torso', 'Fabric', face, (0.5, 0), -1.0, 1.0, 1.98, 4.0, lambda x, z: 0.004, th=0.02, nu=2, nv=2, bevel=0,
-              name='padding')
+    # a padded cloth jacket wrapped right round the torso under the plates, matching the sleeves, so its
+    # sides stay covered when the arms swing away
+    wrap('Torso', 'Cloth', (0, 0), 1.97, 4.0, 1.006, 0.506, -90, 270, ex=14, th=0.02, nu=64, nv=8, closed=True, bevel=0.004,
+         extra=lambda d, z: 0.006 * math.sin(z * 30) * max(0.0, math.cos(math.radians(d))) ** 4, name='jacket')
+    slab('Torso', 'Cloth', lambda u, v: (-1.0 + 2.0 * u, -0.5 + 1.0 * v, 1.97), 8, 4, 0.02, lambda p: (p[0], p[1], p[2] + 1),
+         bevel=0, name='jacket_hem')
     # breastplate and backplate
     sheet('Torso', 'Steel', 'front', (0.5, 0), -0.98, 0.98, bot, lambda x: 3.78 + 0.2 * abs(x), hf, th=0.06, nu=22, nv=12,
           name='breast', trim=T('btlr'))
@@ -491,14 +494,13 @@ def torso():
     slab('Torso', 'Steel', lambda u, v: (-0.98 + 1.96 * u, -0.62 + 1.24 * v,
                                          4.02 + 0.05 * (1 - (2 * u - 1) ** 2) - 0.14 * max(0.0, abs(2 * v - 1) - 0.8) / 0.2),
          10, 8, 0.045, lambda p: (p[0], p[1], p[2] - 1), name='mantle')
-    # belt with a square buckle
-    for face in ('front', 'back'):
-        sheet('Torso', 'Leather', face, (0.5, 0), -1.0, 1.0, 1.98, 2.22, lambda x, z: 0.1, th=0.045, nu=12, nv=2, name='belt')
+    # belt: one loop right round the waist (snug at the sides, where the hands hang), with a square buckle
+    wrap('Torso', 'Leather', (0, 0), 1.98, 2.22, 1.035, 0.6, -90, 270, ex=6, th=0.045, nu=56, nv=2, closed=True, name='belt')
     sheet('Torso', 'Steel', 'front', (0.5, 0), -0.16, 0.16, 1.96, 2.24, lambda x, z: 0.145, th=0.03, nu=4, nv=3,
           name='buckle', trim=T('btlr', w=0.04, th=0.025))
     # skirt: long cloth panels front, back and sides with purple hems, steel tassets over the hips
     fold = lambda x, z, k=13: 0.055 * math.sin(x * k) * min(1.0, (2.1 - z) * 1.5)
-    sheet('Torso', 'Cloth', 'front', (0.5, 0), -0.6, 0.6, lambda x: 0.7 + 0.5 * abs(x) / 0.6, 2.1,
+    sheet('Tabard', 'Cloth', 'front', (0.5, 0), -0.6, 0.6, lambda x: 0.7 + 0.5 * abs(x) / 0.6, 2.1,
           lambda x, z: 0.13 + 0.17 * (2.1 - z) + fold(x, z), th=0.03, nu=24, nv=10, bevel=0.006, name='skirt_front',
           trim=T('blr', w=0.06, th=0.025))
     sheet('Torso', 'Cloth', 'back', (0.5, 0), -0.98, 0.98, lambda x: 0.5 + 0.4 * abs(x), 2.1,
@@ -514,12 +516,15 @@ def torso():
                   nv=4, name='hip_flap', trim=T('blr', w=0.04, th=0.025, mat='Steel'))
     # cape: tucked under the collar, falling in deep folds to the ankles, widening as it goes, with an
     # engraved purple hem and the cross embroidered on its back
-    TOP = 3.95
-    k_ = lambda z: (TOP - z) / 3.8   # 0 at the shoulders, 1 at the hem
+    TOP = 4.04
+    k_ = lambda z: (TOP - z) / 3.88   # 0 at the shoulders, 1 at the hem
 
     def cape_y(x, z):
         k = max(0.0, k_(z))
-        return 0.86 + 0.3 * k ** 1.2 + 0.08 * k * math.sin(x * 8.5 + 0.6) + 0.025 * k * math.sin(x * 21 + 1.3)
+        hug = 0.5 + hb(x, z) + 0.11                     # lying on the backplate
+        free = 0.62 + 0.5 * k ** 1.25                   # hanging free below it
+        y = (hug + free + math.sqrt((hug - free) ** 2 + 0.06 ** 2)) / 2   # a smooth max of the two
+        return y + 0.08 * k * math.sin(x * 8.5 + 0.6) + 0.025 * k * math.sin(x * 21 + 1.3)
     width = lambda z: 0.86 + 0.36 * max(0.0, k_(z))
     hem = lambda xn: 0.16 + 0.1 * xn * xn
 
@@ -537,6 +542,9 @@ def torso():
             z = bot(x) + (top(x) - bot(x)) * v
             return (x, cape_y(x, z) + 0.03, z)
         return fn
+    for sx in (-1, 1):   # studs pinning it at the shoulders
+        rivet('Cape', 'PurplePolish', (sx * 0.74, cape_y(sx * 0.74, 3.86) + 0.035, 3.86), (0, 1, 0), 0.075, flat=0.5)
+        rivet('Cape', 'Steel', (sx * 0.74, cape_y(sx * 0.74, 3.86) + 0.065, 3.86), (0, 1, 0), 0.03, flat=0.6)
     hb_ = lambda x: 0.03 + 0.09 * (1 - abs(x) / 0.62) ** 0.6
     slab('Cape', 'Embroidery', on_cape(-0.62, 0.62, lambda x: 3.05 - hb_(x), lambda x: 3.05 + hb_(x) * 0.85), 24, 2, 0.012,
          lambda p: (p[0], p[1] - 1, p[2]), bevel=0.003, name='cape_cross')
@@ -548,14 +556,18 @@ def arm():
     """the left arm (+X); the right one is its mirror"""
     cx = 1.5
     # black cloth sleeve under it all
-    wrap('LeftArm', 'Fabric', (cx, 0), 2.0, 3.98, 0.535, 0.545, -180, 180, ex=8, th=0.03, nu=30, nv=3, bevel=0.006,
-         closed=True,
-         extra=lambda d, z: 0.012 * math.sin(math.radians(d) * 9 + z * 20), name='sleeve')
+    # purple cloth sleeve (the concept's sleeves match its tabard), gathered in soft folds, closed over the shoulder
+    wrap('LeftArm', 'Cloth', (cx, 0), 2.0, 4.0, 0.535, 0.545, -180, 180, ex=8, th=0.03, nu=36, nv=8, bevel=0.006,
+         closed=True, extra=lambda d, z: 0.018 * math.sin(math.radians(d) * 9 + z * 6) * (0.6 + 0.4 * math.sin(z * 9)),
+         name='sleeve')
+    slab('LeftArm', 'Cloth', lambda u, v: (1.0 + u, -0.55 + 1.1 * v, 4.0 + 0.04 * math.sin(math.pi * u) * math.sin(math.pi * v)),
+         8, 8, 0.03, lambda p: (p[0], p[1], p[2] - 1), bevel=0.006, name='sleeve_top')
     # pauldron: a big dome and two lames below it, each pointed at the outside, all trimmed
     cap = dome(0.76, 3.98, 0.5)
     wrap('LeftArm', 'Steel', (cx + 0.02, 0),
          lambda d: 3.6 - 0.16 * max(0.0, math.cos(math.radians(d))) ** 2, 4.48, cap,
-         lambda z: cap(z) * 0.95, -128, 128, ex=2.6, th=0.06, nu=40, nv=10, name='pauldron', trim=T('blr'))
+         lambda z: cap(z) * 0.95, -180, 180, ex=2.6, th=0.06, nu=48, nv=10, closed=True, name='pauldron', trim=T('b'),
+         extra=lambda d, z: -0.22 * max(0.0, -math.cos(math.radians(d))) ** 1.5)   # closed all round, drawn in at the neck
     for k, (zb, rb) in enumerate(((3.3, 0.88), (3.0, 0.92), (2.72, 0.96)), 1):
         R = lambda z, zb=zb, rb=rb: rb - 0.42 * (z - zb)
         span = 116 - 10 * k
@@ -582,6 +594,9 @@ def arm():
              ex=4.5, th=0.025, nu=36, nv=1, extra=ridge, bevel=0.005, name='strap')
     # gauntlet: leather glove and steel knuckle plate
     wrap('LeftArm', 'Leather', (cx + 0.01, 0), 1.97, 2.24, 0.525, 0.53, -152, 152, ex=5, th=0.035, nu=30, nv=3, name='glove')
+    # the glove's palm, closing the bottom of the hand
+    slab('LeftArm', 'Leather', lambda u, v: (1.0 + 1.04 * u, -0.54 + 1.08 * v, 1.975 - 0.02 * math.sin(math.pi * u) * math.sin(math.pi * v)),
+         6, 6, 0.03, lambda p: (p[0], p[1], p[2] + 1), bevel=0.006, name='palm')
     # purple gauntlet cuff and back-of-hand plate, as on the concept
     Cf = lambda z: 0.585 + 0.25 * (z - 2.16)
     wrap('LeftArm', 'PurplePolish', (cx + 0.02, 0), 2.16, 2.34, Cf, lambda z: Cf(z) + 0.01, -150, 150, ex=5, th=0.045,
@@ -601,7 +616,7 @@ def leg():
     def span(hw, hd):
         a, b, q = hw - R, hd - R, math.pi * R / 2
         return -(a + q + 0.04), 2 * a + 2 * b + 2 * q + a + q + 0.04
-    wrap('LeftLeg', 'Fabric', (0.5, 0), 0.3, 2.0, 0.535, 0.545, -180, 180, ex=8, th=0.03, nu=30, nv=3, bevel=0.006, closed=True,
+    wrap('LeftLeg', 'Fabric', (0.5, 0), 0.0, 2.0, 0.535, 0.545, -180, 180, ex=8, th=0.03, nu=30, nv=3, bevel=0.006, closed=True,
          extra=lambda d, z: 0.012 * math.sin(math.radians(d) * 7 + z * 14), name='trousers')
     # cuisse: a ridged plate over the front and outside of the thigh, pointed at the bottom
     bwrap('LeftLeg', 'Steel', (cx, 0), lambda s_: 1.52 - 0.1 * tri(s_, 0.4), 1.95, 0.575, 0.58, R, -0.44, 0.74, nu=22, nv=4,
@@ -628,6 +643,9 @@ def leg():
     # boot: a squared leather shaft and sole, three ridged sabaton lames and a pointed toe cap
     bwrap('LeftLeg', 'Leather', (cx, 0), 0.04, 0.38, 0.565, 0.57, R, g0, g1, nu=48, nv=3, name='boot')
     bwrap('LeftLeg', 'Leather', (cx, -0.03), 0.0, 0.06, 0.59, 0.61, R, g0, g1, nu=48, nv=1, name='sole')
+    # the underside of the boot (stops at the inner edge so the two soles don't meet)
+    slab('LeftLeg', 'Leather', lambda u, v: (1.1 * u, -0.66 + 1.24 * v, 0.0), 8, 8, 0.03,
+         lambda p: (p[0], p[1], p[2] + 1), bevel=0.006, name='sole_bottom')
     for k, (zb, zt) in enumerate(((0.24, 0.38), (0.14, 0.28), (0.05, 0.19))):
         A = lambda z, k=k, zt=zt: 0.585 + 0.025 * k + 0.1 * (zt - z)
         bwrap('LeftLeg', 'Steel', (cx, 0), zb, zt, A, lambda z, A=A: A(z) + 0.01, R, -0.52, 0.52, nu=18, nv=2,
@@ -1350,14 +1368,93 @@ def timelapse(path, build_frames=200, hold_frames=72, fps=24, size=540, samples=
     print('TIMELAPSE', path, flush=True)
 
 
+CLOTH_RIGS = {
+    # part: (bone name prefix, chain x positions, joint heights top -> tip)
+    'Cape': ('Cape', (-0.75, 0.0, 0.75), (3.85, 2.95, 2.05, 1.15, 0.15)),
+    'Tabard': ('Tabard', (0.0,), (2.08, 1.6, 1.15, 0.68)),
+}
+
+
+def rig_cloth(ob, prefix, xs, zs):
+    """give a cloth mesh an armature: a root bone pinned at the top, and one chain of bones per x in xs
+    hanging down through the joint heights zs. Each vertex is weighted to at most two chains and two
+    bones along them (four influences, Roblox's limit), blending smoothly so the cloth bends, not kinks."""
+    vs = [ob.matrix_world @ v.co for v in ob.data.vertices]
+
+    def y_at(x, z):   # how far back (or forward) the cloth hangs there, for placing the bones in it
+        near = [v.y for v in vs if abs(v.z - z) < 0.2 and abs(v.x - x) < 0.3]
+        return sum(near) / len(near) if near else 0.0
+    ad = bpy.data.armatures.new('Rig_' + prefix)
+    arm = bpy.data.objects.new('Rig_' + prefix, ad)
+    bpy.context.scene.collection.objects.link(arm)
+    names = {}
+    with bpy.context.temp_override(active_object=arm, object=arm, selected_objects=[arm], selected_editable_objects=[arm]):
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.mode_set(mode='EDIT')
+        root = ad.edit_bones.new(prefix + 'Root')
+        y0 = y_at(0.0, zs[0])
+        root.head, root.tail = (0, y0, zs[0] + 0.25), (0, y0, zs[0])
+        for c, x in enumerate(xs):
+            parent = root
+            for r in range(len(zs) - 1):
+                b = ad.edit_bones.new(f'{prefix}_{c}_{r}' if len(xs) > 1 else f'{prefix}_{r}')
+                b.head = (x, y_at(x, zs[r]), zs[r])
+                b.tail = (x, y_at(x, zs[r + 1]), zs[r + 1])
+                b.parent = parent
+                parent = b
+                names[(c, r)] = b.name
+        bpy.ops.object.mode_set(mode='OBJECT')
+    groups = {n: ob.vertex_groups.new(name=n) for n in list(names.values()) + [prefix + 'Root']}
+    spacing = (xs[-1] - xs[0]) / max(1, len(xs) - 1) if len(xs) > 1 else 1.0
+    n = len(zs) - 1
+    for i, v in enumerate(vs):
+        # position down the chain: -0.5 is the pinned top, r + 0.5 the middle of bone r
+        if v.z >= zs[0]:
+            p = -0.5
+        elif v.z <= zs[-1]:
+            p = n - 0.5
+        else:
+            r = max(k for k in range(n) if zs[k] >= v.z)
+            p = r + (zs[r] - v.z) / (zs[r] - zs[r + 1])
+        p = min(max(p, -0.5), n - 0.5)
+        roww = {r: max(0.0, 1 - abs(p - (r + 0.5))) for r in range(-1, n)}
+        if len(xs) > 1:
+            xc = min(max(v.x, xs[0]), xs[-1])
+            colw = {c: max(0.0, 1 - abs(xc - x) / spacing) for c, x in enumerate(xs)}
+        else:
+            colw = {0: 1.0}
+        w = {}
+        for r, wr in roww.items():
+            if wr <= 0:
+                continue
+            if r < 0:
+                w[prefix + 'Root'] = w.get(prefix + 'Root', 0.0) + wr
+                continue
+            for c, wc in colw.items():
+                if wc > 0:
+                    w[names[(c, r)]] = w.get(names[(c, r)], 0.0) + wr * wc
+        top = sorted(w.items(), key=lambda kv: -kv[1])[:4]
+        tot = sum(x for _, x in top) or 1.0
+        for name, x in top:
+            groups[name].add([i], x / tot, 'REPLACE')
+    ob.parent = arm
+    md = ob.modifiers.new('rig', 'ARMATURE')
+    md.object = arm
+    return arm
+
+
 def export(objs, refs):
     for o in bpy.data.objects:
         o.select_set(False)
-    for o in list(objs.values()) + list(refs.values()):
+    rigs = [rig_cloth(objs[part], *CLOTH_RIGS[part]) for part in CLOTH_RIGS if part in objs]
+    for o in bpy.data.objects:
+        o.select_set(False)
+    for o in list(objs.values()) + list(refs.values()) + rigs:
         o.select_set(True)
-    bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'ArmorKit.fbx'), use_selection=True, object_types={'MESH'},
-                             apply_scale_options='FBX_SCALE_ALL', mesh_smooth_type='FACE', use_tspace=True,
-                             path_mode='STRIP', bake_space_transform=True)
+    bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'ArmorKit.fbx'), use_selection=True,
+                             object_types={'MESH', 'ARMATURE'}, apply_scale_options='FBX_SCALE_ALL',
+                             mesh_smooth_type='FACE', use_tspace=True, path_mode='STRIP', add_leaf_bones=False,
+                             armature_nodetype='NULL')
     print('EXPORTED', os.path.join(OUT, 'ArmorKit.fbx'), flush=True)
 
 
