@@ -2,9 +2,9 @@
 	The Wanderer outfit for R6 characters.
 
 	Setup (once):
-	  1. Import export/WandererOutfit.fbx with the 3D Importer. It comes in as a model holding eight
-	     Wanderer_* MeshParts (the hat, the torso, both arms and both legs, plus the cape and the
-	     scarf, which have bones) and six Ref_* parts (the R6 body the outfit was fitted to).
+	  1. Import export/WandererOutfit.fbx with the 3D Importer. It comes in as a model holding nine
+	     Wanderer_* MeshParts (the hat, the torso, both arms and both legs, plus the cape, the
+	     capelet and the scarf, which have bones) and six Ref_* parts (the R6 body the outfit was fitted to).
 	  2. Give each Wanderer_* part a SurfaceAppearance with its four maps from export/
 	     (ColorMap, NormalMap, RoughnessMap, MetalnessMap), unless the importer already did.
 	  3. Name the model "WandererOutfit" and put it in ServerStorage.
@@ -31,9 +31,10 @@ local BODY = {
 	RightLeg = "Right Leg",
 	Cape = "Torso",
 	Scarf = "Torso",
+	Capelet = "Torso",
 }
 -- the reference body part each piece was fitted against (the hat sits on the head, the cloth hangs off the torso)
-local REF = { Hat = "Head", Cape = "Torso", Scarf = "Torso" }
+local REF = { Hat = "Head", Cape = "Torso", Scarf = "Torso", Capelet = "Torso" }
 
 -- where each piece sits relative to its body part, read once from the template's reference body
 local offsets = {}

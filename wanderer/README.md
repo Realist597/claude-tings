@@ -11,13 +11,14 @@ silver accents, and fitted to the same R6 body as the Dark Knight armour (`../ar
     buckled at the back
 - **Torso:**
   - a tall stand-up collar, turned up over the mouth, lined and folded over in purple
-  - a torn short capelet over the chest and shoulders
   - a black shirt
   - two crossed belts with silver buckles
+- **Capelet:** a torn short cape over the chest and back, ending in a V at the front
 - **Cape:**
   - a long, torn cape, longest on the left
   - lined in deep purple
-- **Scarf:** a purple scarf tail streaming from the collar, ending in a swallowtail
+- **Scarf:** a purple scarf tail that grows out of the collar's purple fold, follows it round to the back, then streams
+  away and ends in a swallowtail
 - **Arms:**
   - the capelet's drape over each shoulder
   - black-purple bracers with silver rims, spikes and buckled straps
@@ -43,7 +44,7 @@ triangles. Every surface is a clean quad grid. Hard edges, like the buckles, spi
 
 | File | What it is |
 |---|---|
-| `WandererOutfit.fbx` | Eight meshes: `Wanderer_Hat`, `Wanderer_Torso`, `Wanderer_LeftArm`, `Wanderer_RightArm`, `Wanderer_LeftLeg`, `Wanderer_RightLeg`, and the cloth `Wanderer_Cape` and `Wanderer_Scarf`, which have bones. Also their two armatures, and six `Ref_*` parts: the R6 body it was fitted to |
+| `WandererOutfit.fbx` | Nine meshes: `Wanderer_Hat`, `Wanderer_Torso`, `Wanderer_LeftArm`, `Wanderer_RightArm`, `Wanderer_LeftLeg`, `Wanderer_RightLeg`, and the cloth `Wanderer_Capelet`, `Wanderer_Cape` and `Wanderer_Scarf`, which have bones. Also their three armatures, and six `Ref_*` parts: the R6 body it was fitted to |
 | `Wanderer_<Part>_Color.png` | Base colour (sRGB) |
 | `Wanderer_<Part>_Normal.png` | Tangent-space normal map, OpenGL (+Y), as Roblox expects |
 | `Wanderer_<Part>_Roughness.png` | Roughness |
@@ -61,18 +62,19 @@ Every mesh stays under Roblox's 20,000-triangle limit, and every texture is 1024
 3. **Store it:** rename the model to `WandererOutfit` and move it into **ServerStorage**.
 4. **Script:** put `WandererOutfit.server.lua` in **ServerScriptService** as a Script.
 
-Players then spawn wearing it. Each piece is welded to its body part (the hat to the head, the cape and scarf to the
-torso), so it moves with R6 animations. Other hats and hair are removed so they don't poke through the cowboy hat;
+Players then spawn wearing it. Each piece is welded to its body part (the hat to the head, the capelet, cape and scarf to
+the torso), so it moves with R6 animations. Other hats and hair are removed so they don't poke through the cowboy hat;
 turn that off with `HIDE_ACCESSORIES`. If the outfit comes in facing backwards, set `FLIP = true`.
 
 ## The cloth bones
 
-The cape and the scarf are rigged for you to animate, for example with Smart Bones:
+The capelet, the cape and the scarf are rigged for you to animate, for example with Smart Bones:
 
 | Mesh | Root bone | Chains |
 |---|---|---|
+| `Wanderer_Capelet` | `CapeletRoot` (over the shoulders) | three chains of two down the front, `Capelet_F_<chain>_<0..1>`, and three down the back, `Capelet_B_<chain>_<0..1>` |
 | `Wanderer_Cape` | `CapeRoot` | three chains of four, `Cape_<chain>_<0..3>`, top to bottom |
-| `Wanderer_Scarf` | `ScarfRoot` (inside the collar) | one chain of five along the scarf, `Scarf_0..4`, root to tip |
+| `Wanderer_Scarf` | `ScarfRoot` (inside the collar) | one chain of five along the scarf, `Scarf_0..4`, root to tip. The root lies along the collar's fold |
 
 Each root should stay still. Every vertex has at most four bone influences, and the weights blend between neighbouring
 bones so the cloth bends smoothly.
@@ -85,6 +87,7 @@ with the pip `bpy` module or Blender 4.2+:
 ```
 python build_wanderer.py -- --stage preview   # quick look with live materials
 python build_wanderer.py -- --stage stats     # triangle counts per piece and per mesh
+python build_wanderer.py -- --stage inspect   # close-ups of the belts, knees, thigh and collar
 python build_wanderer.py -- --stage all       # bake maps, render previews, export the FBX
 ```
 
