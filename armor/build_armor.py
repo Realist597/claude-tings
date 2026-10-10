@@ -15,6 +15,8 @@ cloth) baked down to PBR maps per mesh for Roblox SurfaceAppearance:
 
     preview    build the meshes and render preview.png with the live procedural materials (fast)
     timelapse  film the armour being put together piece by piece (build_timelapse.mp4)
+    live       open Blender's window and watch it being built piece by piece in the viewport:
+                 blender --python build_armor.py -- --stage live
     bake     build, UV, bake the maps, render preview.png with the baked maps, export ArmorKit.fbx
 """
 import bpy, bmesh, math, os, sys
@@ -1248,17 +1250,16 @@ def preview(path, samples=48):
     print('PREVIEW', path, flush=True)
 
 
-def timelapse(path, build_frames=200, hold_frames=72, fps=24, size=540, samples=10):
-    """film the armour being put together: every plate, trim, bead and rivet appears in the order the
-    script makes it (right-hand pieces just after their left-hand twins), the camera circling as it goes,
-    then a full turn round the finished suit. Frames go to <path>_frames/, the video to path (MP4)."""
-    import subprocess
+def build_sequence():
+    """build every detailed piece as its own object and return them in the order they were made, each
+    right-hand piece just after its left-hand twin"""
     materials()
     HIGH[0] = True
     pieces()
     HIGH[0] = False
     for ob in [o for o in bpy.data.objects if o.name.startswith('cut')]:
         ob.hide_render = True
+        ob.hide_set(True)
     for p, ob in PIECES:
         smooth(ob.data)
     left = [ob for p, ob in PIECES if p.startswith('Left')]
@@ -1270,6 +1271,60 @@ def timelapse(path, build_frames=200, hold_frames=72, fps=24, size=540, samples=
         order.append(ob)
         if ob in twins:
             order.append(twins[ob])
+    return order
+
+
+def live(per_tick=3, interval=0.05):
+    """watch it being built in Blender's own window: the R6 body appears, then the armour piece by piece
+    in the viewport, in material preview, while the view slowly circles. Run with a window (no -b)."""
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    order = build_sequence()
+    load_rig()
+    for ob in order:
+        ob.hide_set(True)
+    state = {'i': 0, 'turn': 0.0}
+
+    def views():
+        for win in bpy.context.window_manager.windows:
+            for area in win.screen.areas:
+                if area.type == 'VIEW_3D':
+                    yield area.spaces.active
+
+    def frame_view():
+        for sp in views():
+            sp.shading.type = 'MATERIAL'
+            sp.overlay.show_floor = False
+            sp.overlay.show_axis_x = sp.overlay.show_axis_y = False
+            r3 = sp.region_3d
+            r3.view_perspective = 'PERSP'
+            r3.view_location = (0, 0, 2.5)
+            r3.view_distance = 13
+        return None
+
+    def tick():
+        i = state['i']
+        for ob in order[i:i + per_tick]:
+            ob.hide_set(False)
+        state['i'] = i + per_tick
+        state['turn'] += 0.004
+        for sp in views():
+            from mathutils import Euler
+            sp.region_3d.view_rotation = Euler((math.radians(80), 0, math.radians(-30) + state['turn']), 'XYZ').to_quaternion()
+        if state['i'] >= len(order):
+            print('LIVE ALL DONE', flush=True)
+            return None
+        return interval
+    bpy.app.timers.register(frame_view, first_interval=0.5)
+    bpy.app.timers.register(tick, first_interval=2.0)
+
+
+def timelapse(path, build_frames=200, hold_frames=72, fps=24, size=540, samples=10):
+    """film the armour being put together: every plate, trim, bead and rivet appears in the order the
+    script makes it (right-hand pieces just after their left-hand twins), the camera circling as it goes,
+    then a full turn round the finished suit. Frames go to <path>_frames/, the video to path (MP4)."""
+    import subprocess
+    order = build_sequence()
     load_rig()
     sc, cam, cam_d = studio()
     sc.cycles.samples = samples
@@ -1307,6 +1362,9 @@ def export(objs, refs):
 
 
 def main():
+    if STAGE == 'live':   # in Blender's window: keep the UI, just empty the scene
+        live()
+        return
     reset()
     if STAGE == 'timelapse':
         os.makedirs(OUT, exist_ok=True)

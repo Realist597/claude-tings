@@ -39,4 +39,10 @@ python build_armor.py -- --stage preview          # quick look with live materia
 python build_armor.py -- --stage all --res 1024   # bake maps, render previews, export FBX
 ```
 
+To **watch it being built** in Blender's own window, piece by piece, run this with Blender 4.2+:
+
+```
+blender --python build_armor.py -- --stage live
+```
+
 Colours are set in `materials()`, and each piece's shape is in `helmet()`, `torso()`, `arm()` and `leg()`.
