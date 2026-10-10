@@ -1,12 +1,11 @@
 # Dark Knight bow and arrow
 
-The bow is traced from `bow_reference.jpg`, not modelled by hand, so it matches the painting exactly:
-- **Shape:** its silhouette is cut out of the painting and given depth, thickest along the middle of each limb and
-  blade and tapering to the edges.
-- **Colour map:** the painting itself, so you get the same stylised metal and highlights. The purple inlays are
-  recoloured with a gradient, from deep violet at the grip to bright lavender at the tips, and glow through an
-  emissive mask.
-- **Other maps:** normal, roughness and metalness are derived from the painting, so it still catches light like metal.
+The bow is traced from `bow_reference.jpg`, not modelled by hand:
+- **Shape:** its lower half is traced as a precise outline and mirrored over the grip, so both limbs match exactly. The
+  outline is triangulated cleanly, so points and edges stay sharp. The depth is blade-like: a crisp ridge down the middle
+  of every limb, blade and feather, tapering to a thin edge.
+- **Colour map:** the painting itself. The purple inlays are recoloured to a gradient, deep violet at the grip to bright
+  lavender at the tips, and glow through an emissive mask.
 - **String:** a separate mesh, so you can animate the draw.
 
 The arrow is modelled, because in the painting it's wrapped in flames. It has a barbed broadhead, a banded shaft and

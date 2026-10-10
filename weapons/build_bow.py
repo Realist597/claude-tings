@@ -1,27 +1,31 @@
 """The Dark Knight's bow, traced from bow_reference.jpg, and an arrow for it.
 
-The bow is not modelled by hand: its silhouette is cut out of the reference painting, given depth by
-swelling it from its edges inward (thickest in the middle of each limb and blade, tapering to the
-edges), and the painting itself becomes its colour map, so it matches the image exactly -- the
-stylised metal, the highlights and the purple inlays. Normal, roughness and metalness maps are derived
-from the painting so it still catches light like metal in Roblox. The string is a separate mesh along
-the painted string.
+The bow is not modelled by hand. Its lower half is traced out of the reference painting (see
+bow_trace.py) as a precise outline and mirrored over the grip, so both limbs match; that outline is
+triangulated cleanly and given a blade-like depth -- a ridge down the middle of every limb, blade and
+feather, tapering to a thin edge -- and auto smoothed, so its faces are smooth but every ridge and
+edge stays sharp. The painting is
+its colour map (the upper half's UVs mirror onto the lower half's pixels, doubling the detail), with the
+purple inlays recoloured to a gradient and an emissive mask so they glow, plus roughness, metalness and
+a light normal map. The string is its own mesh.
 
 The arrow is modelled (in the painting it's wrapped in flames): barbed broadhead, banded shaft,
-jagged fletching, in stylised purple, baked to the same four maps.
+jagged fletching, in stylised purple, baked to the same maps.
 
     python build_bow.py -- [--stage preview|all] [--out DIR]
-    -> export/BowKit.fbx: Weapon_Bow  Weapon_BowString  Weapon_Arrow, plus each one's
-       _Color / _Normal / _Roughness / _Metalness.png
+    -> export/BowKit.fbx: Weapon_Bow  Weapon_BowString  Weapon_Arrow, plus their
+       _Color / _Normal / _Roughness / _Metalness (/ _Emissive).png
 
-The bow stands in the XZ plane, 5 studs tall, with the grip at the origin and the string vertical on
-its +X side; the arrow points up +Z with its nock at the origin.
+The bow stands in the XZ plane, about 5 studs tall, with the grip at the origin and the string vertical
+on its +X side; the arrow points up +Z with its nock at the origin.
 """
 import bpy, bmesh, math, os, sys
 import numpy as np
 from mathutils import Vector, Matrix
 from PIL import Image
 from scipy import ndimage as ndi
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bow_trace as bt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'armor'))
@@ -34,11 +38,9 @@ am.PARTS.clear()
 am.PARTS.update({'Arrow': ((3, 0, 0), None)})
 ARROW_X = 3.0   # where the arrow stands beside the bow in the previews (moved back to the origin on export)
 
-REF = os.path.join(HERE, 'bow_reference.jpg')
-STRING = ((800, 298), (160, 1000))   # the string's ends in the painting (px), found by fitting the line
 STRING_STUDS = 4.0                   # how long the string is in Roblox: sets the bow's size
-GRID = 4                             # px per mesh cell when tracing
-MAX_TRIS = 17000
+SHARP_ANGLE = 20                     # auto smooth: edges bending more than this stay sharp
+MAX_AREA = 145                       # largest triangle (in 2x-traced pixels): sets the mesh's density
 EMISSIVE_STRENGTH = 1.6              # for the previews; set SurfaceAppearance.EmissiveStrength to taste in Studio
 
 
@@ -164,200 +166,99 @@ def arrow():
 
 
 
-# ------------------------------------------------------------------ tracing the bow
+# ------------------------------------------------------------------ the traced bow
 
-def load_reference():
-    img = np.asarray(Image.open(REF).convert('RGB')).astype(np.float32)
-    H, W, _ = img.shape
-    lum, sat = img.mean(2), img.max(2) - img.min(2)
-    # the backdrop is a neutral radial gradient: estimate it ring by ring from the grey pixels
-    yy, xx = np.mgrid[0:H, 0:W]
-    r = np.hypot(yy - H / 2, xx - W / 2).astype(int)
-    grey = sat < 10
-    ring, last = np.zeros(r.max() + 5), 66.0
-    for k in range(0, r.max() + 1, 4):
-        sel = grey & (r >= k) & (r < k + 4)
-        if sel.sum() > 20:
-            last = float(np.median(lum[sel]))
-        ring[k:k + 4] = last
-    bg = ring[r]
-    return img, lum, sat, bg
-
-
-def bow_mask(img, lum, sat, bg):
-    """the bow: everything the backdrop can't reach from the edges of the picture, minus real openings
-    (the loop guard, gaps between blades), minus the string and the arrows"""
-    H, W = lum.shape
-    backdrop_like = (np.abs(lum - bg) <= 10) & (sat <= 16)
-    lab, n = ndi.label(backdrop_like)
-    edge = set(np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
-    fg = ~np.isin(lab, list(edge))
-    sizes = ndi.sum(np.ones_like(lab), lab, range(1, n + 1))
-    openings = np.isin(lab, [i + 1 for i, s in enumerate(sizes) if s > 500 and (i + 1) not in edge])
-    fg &= ~openings
-    # cut the string away (keeping its anchors at the tips)
-    (ax, ay), (bx, by) = STRING
-    yy, xx = np.mgrid[0:H, 0:W]
-    d = np.array([bx - ax, by - ay], float)
-    L = np.linalg.norm(d)
-    t = ((xx - ax) * d[0] + (yy - ay) * d[1]) / L ** 2
-    dist = np.abs((xx - ax) * d[1] - (yy - ay) * d[0]) / L
-    fg &= ~((dist < 3.5) & (t > 0.03) & (t < 0.97))
-    fg = ndi.binary_opening(fg, iterations=1)
-    L_, m = ndi.label(fg)
-    left = [i for i in np.unique(L_[:, :120]) if i]           # the bow is the piece reaching the left edge
-    bow = L_ == max(left, key=lambda i: (L_ == i).sum())
-    return ndi.binary_fill_holes(bow) & ~openings
-
-
-def frame():
-    """painting px -> bow plane (x, z) in studs: string vertical, grip at the origin"""
-    (ax, ay), (bx, by) = STRING
-    a = np.array([ax, -ay], float)
-    d = np.array([bx - ax, -(by - ay)], float)
-    s = STRING_STUDS / np.linalg.norm(d)
-    rot = -math.pi / 2 - math.atan2(d[1], d[0])
-    c, sn = math.cos(rot), math.sin(rot)
-    R = np.array([[c, -sn], [sn, c]])
-    return lambda px, py: (R @ (np.stack([np.asarray(px, float), -np.asarray(py, float)]) - a[:, None])).T * s, s
-
-
-def textures(img, lum, sat, mask, box):
-    """colour from the painting itself (the backdrop filled in from the nearest bow pixel so nothing grey
-    bleeds in at the edges); normal from the painting's shading; roughness and metalness by material"""
-    y0, y1, x0, x1 = box
-    S = max(y1 - y0, x1 - x0)
-    sq = lambda a, fill: np.pad(a, ((0, S - (y1 - y0)), (0, S - (x1 - x0))) + ((0, 0),) * (a.ndim - 2),
-                                constant_values=fill)
-    m = mask[y0:y1, x0:x1]
+def bow_textures(sym):
+    """the maps, from the lower half of the symmetric painting only (the upper half's UVs mirror onto it,
+    so the texture's detail is twice what it would be): colour from the painting with its purple
+    inlays recoloured to a gradient, an emissive mask for them, a light normal map, roughness and metalness"""
+    g = int(round(sym['grip_v']))
+    m = sym['mask'][g:] > 0.5
+    col = sym['col'][g:]
+    H, W = m.shape
+    S = max(H, W)
     _, (iy, ix) = ndi.distance_transform_edt(~m, return_indices=True)
-    col = img[y0:y1, x0:x1][iy, ix]
-    L = col.mean(2) / 255.0
-    sat_ = (col.max(2) - col.min(2)) / 255.0
-    purple = (sat_ > 0.12) & (col[..., 2] > col[..., 1] + 12)
-    # normal: the painting's light and shade read as relief (fine detail only; the shape is in the mesh)
-    h = ndi.gaussian_filter(L, 1.0) - ndi.gaussian_filter(L, 6.0)
-    gy, gx = np.gradient(h)
-    k = 1.2
-    nrm = np.dstack([-gx * k, gy * k, np.ones_like(h)])
-    nrm /= np.linalg.norm(nrm, axis=2, keepdims=True)
-    nrm = nrm * 0.5 + 0.5
-    # the purple inlays, softly: how purple each pixel is (saturated, blue above green)
-    w = np.clip((sat_ - 0.07) / 0.1, 0, 1) * np.clip(((col[..., 2] - col[..., 1]) / 255.0 - 0.02) / 0.07, 0, 1)
+    col = col[iy, ix] / 255.0                     # fill outside the bow from its nearest pixel: no grey fringe
+    L = col.mean(2)
+    sat_ = col.max(2) - col.min(2)
+    purple_hard = (sat_ > 0.12) & (col[..., 2] > col[..., 1] + 0.05)
+    w = np.clip((sat_ - 0.07) / 0.1, 0, 1) * np.clip((col[..., 2] - col[..., 1] - 0.02) / 0.07, 0, 1)
     w = ndi.gaussian_filter(w, 0.7) * m
-    # a gradient along the bow: deep violet at the grip, vivid purple, light lavender at the tips...
-    (ax, ay), (bx, by) = STRING
-    yy, xx = np.mgrid[y0:y1, x0:x1]
-    t = ((xx - ax) * (bx - ax) + (yy - ay) * (by - ay)) / float((bx - ax) ** 2 + (by - ay) ** 2)
-    g = np.clip(np.abs(t - 0.5) * 2, 0, 1)
+    # gradient: deep violet at the grip, vivid purple, bright lavender at the tip
+    gpos = np.clip(np.arange(H)[:, None] / (sym['v_bot'] - sym['grip_v']), 0, 1) * np.ones((1, W))
     stops = np.array([[0.22, 0.04, 0.58], [0.52, 0.14, 1.0], [0.82, 0.38, 1.0]])
-    ramp = np.where((g < 0.5)[..., None], stops[0] + (stops[1] - stops[0]) * (g / 0.5)[..., None],
-                    stops[1] + (stops[2] - stops[1]) * ((g - 0.5) / 0.5)[..., None])
-    # ...and across each inlay: a bright core fading to its edges
-    core = np.clip(ndi.distance_transform_edt(w > 0.5) / 3.0, 0, 1)
-    shade = 0.5 + 0.5 * L                       # keep the painting's light and shade on top
-    tinted = np.clip(ramp * shade[..., None] + core[..., None] * 0.08, 0, 1)
-    col = col / 255.0 * (1 - w[..., None]) + tinted * w[..., None]
-    emissive = w * (0.5 + 0.5 * core)           # glow: where the purple is, strongest along the cores
-    rough = np.clip(0.48 - 0.22 * L, 0.18, 0.6)
-    rough[purple] = 0.3
-    metal = np.where(purple, 0.2, 0.38)
-    maps = {'Color': sq(col, 0.0), 'Normal': sq(nrm, 0.5), 'Roughness': sq(rough, 0.5), 'Metalness': sq(metal, 0.5),
-            'Emissive': sq(emissive, 0.0)}
+    ramp = np.where((gpos < 0.5)[..., None], stops[0] + (stops[1] - stops[0]) * (gpos / 0.5)[..., None],
+                    stops[1] + (stops[2] - stops[1]) * ((gpos - 0.5) / 0.5)[..., None])
+    core = np.clip(ndi.distance_transform_edt(w > 0.5) / 4.0, 0, 1)
+    tinted = np.clip(ramp * (0.5 + 0.5 * L)[..., None] + core[..., None] * 0.08, 0, 1)
+    col = col * (1 - w[..., None]) + tinted * w[..., None]
+    emissive = w * (0.5 + 0.5 * core)
+    # a light normal map: just the painting's finest lines, so painted bevels catch a little light
+    h = ndi.gaussian_filter(L, 1.0) - ndi.gaussian_filter(L, 4.0)
+    gy, gx = np.gradient(h)
+    nrm = np.dstack([-gx * 0.5, gy * 0.5, np.ones_like(h)])
+    nrm /= np.linalg.norm(nrm, axis=2, keepdims=True)
+    rough = np.clip(0.46 - 0.22 * L, 0.18, 0.6)
+    rough[purple_hard] = 0.3
+    metal = np.where(purple_hard, 0.2, 0.4)
+    pad = lambda a, fill: np.pad(a, ((0, S - H), (0, S - W)) + ((0, 0),) * (a.ndim - 2), constant_values=fill)
+    maps = {'Color': col, 'Normal': nrm * 0.5 + 0.5, 'Roughness': rough, 'Metalness': metal, 'Emissive': emissive}
+    fills = {'Color': 0.0, 'Normal': 0.5, 'Roughness': 0.5, 'Metalness': 0.4, 'Emissive': 0.0}
     out = {}
     for ch, a in maps.items():
-        a = np.clip(a, 0, 1)
+        a = np.clip(pad(a, fills[ch]), 0, 1)
+        if ch == 'Normal':
+            a[H:, :, 2] = 1.0
+            a[:, W:, 2] = 1.0
         if a.ndim == 2:
             a = np.dstack([a] * 3)
-        pim = Image.fromarray((a * 255 + 0.5).astype(np.uint8)).resize((1024, 1024), Image.LANCZOS)
         path = os.path.join(OUT, f'Weapon_Bow_{ch}.png')
-        pim.save(path)
+        Image.fromarray((a * 255 + 0.5).astype(np.uint8)).resize((1024, 1024), Image.LANCZOS).save(path)
         out[ch] = path
-    return out, S
+    return out, g, S
 
 
-def bow_mesh(mask, box, S):
-    """the traced silhouette as a solid: a grid of cells inside the outline, front and back faces swollen
-    apart by the distance to the edge (so limbs and blades are thickest along their middles), joined by a
-    thin rim, the stair-stepped outline smoothed, then reduced to fit Roblox's triangle limit"""
-    y0, y1, x0, x1 = box
-    to_plane, s = frame()
-    dist = ndi.distance_transform_edt(mask)
-    H, W = mask.shape
-    g = GRID
-    ys = list(range(y0, y1 + 1, g))
-    xs = list(range(x0, x1 + 1, g))
-    inside = {}
-    for j, y in enumerate(ys[:-1]):
-        for i, x in enumerate(xs[:-1]):
-            cy, cx = min(y + g // 2, H - 1), min(x + g // 2, W - 1)
-            if mask[cy, cx]:
-                inside[(i, j)] = True
-    nodes = {}
-    for (i, j) in inside:
-        for di, dj in ((0, 0), (1, 0), (1, 1), (0, 1)):
-            nodes[(i + di, j + dj)] = None
-    # outline edges: a cell side with the cell inside and its neighbour outside
-    edges = []
-    for (i, j) in inside:
-        for (di, dj), (a, b) in (((0, -1), ((i, j), (i + 1, j))), ((1, 0), ((i + 1, j), (i + 1, j + 1))),
-                                 ((0, 1), ((i + 1, j + 1), (i, j + 1))), ((-1, 0), ((i, j + 1), (i, j)))):
-            if (i + di, j + dj) not in inside:
-                edges.append((a, b))
-    pos = {k: np.array([xs[k[0]] if k[0] < len(xs) else xs[-1] + g, ys[k[1]] if k[1] < len(ys) else ys[-1] + g], float)
-           for k in nodes}
-    nbr = {}
-    for a, b in edges:
-        nbr.setdefault(a, []).append(b)
-        nbr.setdefault(b, []).append(a)
-    for _ in range(4):   # smooth the stair-stepped outline
-        new = {k: pos[k] * 0.5 + 0.5 * np.mean([pos[q] for q in v], 0) for k, v in nbr.items()}
-        pos.update(new)
-    def thick(k):
-        px, py = pos[k]
-        d = dist[int(min(max(py, 0), H - 1)), int(min(max(px, 0), W - 1))]
-        if k in nbr:
-            d = 0.0
-        return 0.006 + 0.05 * min(1.0, d / 14.0) ** 0.7
+def bow_mesh(sym, g, S):
+    """the symmetric silhouette as a blade-like solid: a quality triangulation of its precise outline,
+    front and back faces drawn apart by the distance to the edge -- a sharp ridge down the middle of every
+    limb, blade and feather, tapering to a thin edge -- and a thin rim round it"""
+    polys, soft = bt.outline(sym['mask'])
+    V, T, on_edge, segs = bt.triangulate(polys, soft, MAX_AREA)
+    dist = ndi.distance_transform_edt(sym['mask'] > 0.5)
+    H, W = sym['mask'].shape
+    s = STRING_STUDS / (sym['v_bot'] - sym['v_top'])
+    gu, gv = sym['grip_u'], sym['grip_v']
     bm = bmesh.new()
     uvl = bm.loops.layers.uv.new('UVMap')
-    front, back, uv = {}, {}, {}
-    for k in nodes:
-        px, py = pos[k]
-        (X, Z), = to_plane([px], [py])
-        h = thick(k)
-        front[k] = bm.verts.new((X, -h, Z))
-        back[k] = bm.verts.new((X, h, Z))
-        uv[k] = ((px - x0) / S, 1 - (py - y0) / S)
-    def quad(vs, ks):
+    front, back, uv = [], [], []
+    for (x, y), edge in zip(V, on_edge):
+        d = 0.0 if edge else dist[int(min(max(y, 0), H - 1)), int(min(max(x, 0), W - 1))]
+        h = 0.0035 + 0.042 * min(1.0, d / 22.0) ** 0.9
+        X, Z = (x - gu) * s, (gv - y) * s
+        front.append(bm.verts.new((X, -h, Z)))
+        back.append(bm.verts.new((X, h, Z)))
+        ym = y if y >= g else 2 * gv - y           # the upper half reads the lower half's pixels, mirrored
+        uv.append((x / S, 1 - (ym - g) / S))
+    def tri(vs, ids):
         try:
             f = bm.faces.new(vs)
         except ValueError:
             return
-        for loop, k in zip(f.loops, ks):
-            loop[uvl].uv = uv[k]
-    for (i, j) in inside:
-        ks = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)]
-        quad([front[k] for k in ks], ks)
-        quad([back[k] for k in ks[::-1]], ks[::-1])
-    for a, b in edges:
-        quad([front[a], front[b], back[b], back[a]], [a, b, b, a])
-    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-6)
+        for loop, i in zip(f.loops, ids):
+            loop[uvl].uv = uv[i]
+    for a, b, c in T:
+        tri((front[a], front[b], front[c]), (a, b, c))
+        tri((back[c], back[b], back[a]), (c, b, a))
+    for a, b in segs:
+        tri((front[a], front[b], back[b], back[a]), (a, b, b, a))
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     me = bpy.data.meshes.new('Weapon_Bow')
     bm.to_mesh(me)
     bm.free()
     ob = bpy.data.objects.new('Weapon_Bow', me)
     bpy.context.scene.collection.objects.link(ob)
-    tris = sum(len(p.vertices) - 2 for p in me.polygons)
-    if tris > MAX_TRIS:
-        md = ob.modifiers.new('fit', 'DECIMATE')
-        md.ratio = MAX_TRIS / tris
-        dg = bpy.context.evaluated_depsgraph_get()
-        me2 = bpy.data.meshes.new_from_object(ob.evaluated_get(dg))
-        ob.modifiers.clear()
-        ob.data = me2
-    am.smooth(ob.data)
+    am.smooth(ob.data, SHARP_ANGLE)   # auto smooth: smooth faces, crisp edges at every ridge and blade edge
+    to_plane = lambda xs, ys: [((x - gu) * s, (gv - y) * s) for x, y in zip(xs, ys)]
     return ob, to_plane
 
 
@@ -391,19 +292,15 @@ def texture_material(name, paths):
     return m
 
 
-def bow_string(img, lum, sat, bg, to_plane):
-    """a thin cord between the painted string's ends, in the string's own colour"""
-    (ax, ay), (bx, by) = STRING
-    t = np.linspace(0.1, 0.9, 400)
-    xs_, ys_ = (ax + (bx - ax) * t).astype(int), (ay + (by - ay) * t).astype(int)
-    samples = img[ys_, xs_]
-    sel = (samples.max(1) - samples.min(1)) > 12
-    colour = samples[sel].mean(0) / 255.0 if sel.any() else np.array([0.62, 0.5, 0.85])
-    (X0, Z0), (X1, Z1) = to_plane([ax, bx], [ay, by])
+def bow_string(sym, to_plane):
+    """a thin cord between the string's ends, in the painted string's colour"""
+    u = sym['u0']
+    (X0, Z0), (X1, Z1) = to_plane([u, u], [sym['v_top'], sym['v_bot']])
     pts = [Vector((X0 + (X1 - X0) * k / 10, 0, Z0 + (Z1 - Z0) * k / 10)) for k in range(11)]
     ob = tube('BowString', 'Glow', pts, [(0.014, 0.014)] * 11, ring=8, name='Weapon_BowString')
     am.PIECES.remove(('BowString', ob))
     ob.name = 'Weapon_BowString'
+    colour = np.array([0.62, 0.5, 0.86])
     flat = {'Color': np.dstack([np.full((64, 64), c) for c in colour]), 'Normal': np.dstack([np.full((64, 64), v) for v in (0.5, 0.5, 1.0)]),
             'Roughness': np.full((64, 64, 3), 0.35), 'Metalness': np.full((64, 64, 3), 0.3),
             'Emissive': np.full((64, 64, 3), 0.8)}
@@ -415,28 +312,17 @@ def bow_string(img, lum, sat, bg, to_plane):
     return ob, paths
 
 
-
 # ------------------------------------------------------------------ build, preview, export
 
 def build_bow():
-    img, lum, sat, bg = load_reference()
-    mask = bow_mask(img, lum, sat, bg)
-    ys, xs = np.nonzero(mask)
-    pad = 8
-    box = (max(ys.min() - pad, 0), min(ys.max() + pad, mask.shape[0]), max(xs.min() - pad, 0), min(xs.max() + pad, mask.shape[1]))
-    paths, S = textures(img, lum, sat, mask, box)
-    bow, to_plane = bow_mesh(mask, box, S)
+    img, lum, sat, bg = bt.load_reference()
+    sym = bt.symmetric(bt.upright(img, bt.bow_mask(img, lum, sat, bg)))
+    paths, g, S = bow_textures(sym)
+    bow, to_plane = bow_mesh(sym, g, S)
     bow.data.materials.append(texture_material('Weapon_Bow', paths))
-    string, spaths = bow_string(img, lum, sat, bg, to_plane)
+    string, spaths = bow_string(sym, to_plane)
     string.data.materials.clear()
     string.data.materials.append(texture_material('Weapon_BowString', spaths))
-    # grip at the origin: the point of the bow farthest from the string
-    verts = [v.co for v in bow.data.vertices]
-    sx = min(v.co.x for v in string.data.vertices)
-    far = max(verts, key=lambda v: abs(v.x - sx))
-    grip = Matrix.Translation((-far.x, 0, -far.z))
-    for ob in (bow, string):
-        ob.data.transform(grip)
     return bow, string
 
 
