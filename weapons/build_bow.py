@@ -498,4 +498,5 @@ def main():
     export([bow, string, arrow_ob])
 
 
-main()
+if __name__ == '__main__':   # (importable, e.g. by the quiver script)
+    main()
