@@ -4,6 +4,7 @@ The bow is traced from `bow_reference.jpg`, not modelled by hand:
 - **Shape:** its lower half is traced as a precise outline and mirrored over the grip, so both limbs match exactly. The
   outline is triangulated cleanly, so points and edges stay sharp. The depth is blade-like: a crisp ridge down the middle
   of every limb, blade and feather, tapering to a thin edge.
+- **Shading:** auto-smoothed, so faces are smooth but every ridge and edge stays crisp.
 - **Colour map:** the painting itself. The purple inlays are recoloured to a gradient, deep violet at the grip to bright
   lavender at the tips, and glow through an emissive mask.
 - **String:** a separate mesh, so you can animate the draw.
@@ -23,7 +24,7 @@ jagged fletching, in stylised purple, with no effects; add those in Studio.
 | `preview.png`, `preview_1.png` | Renders with these maps |
 
 **Sizes:**
-- **Bow:** 5 studs tall, under 17,000 triangles, with the grip at its origin and the string on its +X side.
+- **Bow:** about 5 studs tall, under 19,000 triangles, with the grip at its origin and the string on its +X side.
 - **Arrow:** 3.1 studs long, pointing up +Z, with its nock at the origin.
 
 ## In Studio
