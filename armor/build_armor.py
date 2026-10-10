@@ -1500,4 +1500,5 @@ def main():
         export(objs, refs)
 
 
-main()
+if __name__ == '__main__':   # (importable as a library, e.g. by the weapons script)
+    main()
