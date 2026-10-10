@@ -31,6 +31,7 @@ RES = int(opt('--res', '1024'))
 OUT = os.path.abspath(opt('--out', os.path.join(HERE, 'export')))
 RIG = os.path.join(HERE, 'r6_rig_body.fbx')
 TAU = math.tau
+HIGH = [False]   # True while building the detailed high-poly pass that gets baked down
 
 # R6 body parts in Blender space: centre and size (studs)
 PARTS = {
@@ -80,7 +81,7 @@ def normal_at(fn, u, v, inside, closed_u=False):
     return -n if n.dot(out) < 0 else n
 
 
-def slab(part, mat, fn, nu, nv, th, inside, closed_u=False, bevel=0.01, name='piece', trim=None):
+def slab(part, mat, fn, nu, nv, th, inside, closed_u=False, bevel=0.01, name='piece', trim=None, uvd=1.0):
     """A solid plate of thickness `th` grown outward from the parametric surface fn(u, v), u, v in
     [0, 1]. `inside(P)` gives a point behind the surface so the plate grows away from the body.
     trim: dict(w, th, mat, sides) adds a raised border running round the plate's edges
@@ -108,17 +109,25 @@ def slab(part, mat, fn, nu, nv, th, inside, closed_u=False, bevel=0.01, name='pi
             V[i][j] = acc
     IN = 0.35
     bm = bmesh.new()
-    uvl = bm.loops.layers.uv.new('UVMap')
+    uvl = bm.loops.layers.uv.new('UVMap')     # packed, what the baked maps use
+    dtl = bm.loops.layers.uv.new('Detail')    # raw studs, what the procedural materials use
     inner = [[bm.verts.new(P[i][j]) for j in range(nv + 1)] for i in range(cols)]
     outer = [[bm.verts.new(Q[i][j]) for j in range(nv + 1)] for i in range(cols)]
+    inner_set = {v for row in inner for v in row}
+    outer_set = {v for row in outer for v in row}
 
     def quad(vs, uvs):
         try:
             f = bm.faces.new(vs)
         except ValueError:
             return
+        k = IN if vs[0] in inner_set else 1.0
+        if vs[0] in inner_set and any(v in outer_set for v in vs):
+            k = 1.0   # a rim face
         for loop, uv in zip(f.loops, uvs):
-            loop[uvl].uv = uv
+            raw = (uv[0] / k, uv[1] / k)
+            loop[uvl].uv = (uv[0] * uvd, uv[1] * uvd)
+            loop[dtl].uv = raw
     spans = cols if closed_u else nu
     for i in range(spans):
         i2, k = (i + 1) % cols, i + 1
@@ -151,35 +160,49 @@ def slab(part, mat, fn, nu, nv, th, inside, closed_u=False, bevel=0.01, name='pi
 def add_trims(part, fn, inside, closed_u, nu, nv, plate_th, trim):
     w, tt = trim.get('w', 0.065), trim.get('th', 0.035)
     mat, sides = trim.get('mat', 'Purple'), trim.get('sides', 'btlr')
-    lift = plate_th - 0.012
 
     def length(f, n=8):
         pts = [Vector(f(k / n)) for k in range(n + 1)]
         return max(sum((pts[k + 1] - pts[k]).length for k in range(n)), 1e-4)
 
-    def lifted(u, v):
+    def lifted(u, v, lift):
         uc = u if closed_u else min(max(u, 0.0), 1.0)
         return Vector(fn(u, v)) + normal_at(fn, uc, min(max(v, 0.0), 1.0), inside, closed_u) * lift
 
-    def dv_at(u):
-        return min(0.45, w / length(lambda t: fn(u, t)))
-    for side in sides:
+    def band(side, d0, d1, m, th_, lift, uvd, bevel, label):
+        """a strip along one edge of the plate, from d0 to d1 studs in from that edge. On the game mesh it
+        is coarser and unbevelled: the high pass carries the rounding into the normal map"""
+        if not HIGH[0]:
+            bevel = 0
+        cols = nu if HIGH[0] else max(4, (nu + 1) // 2)
+        rows = max(3, nv) if HIGH[0] else max(2, (nv + 1) // 2)
         if side in 'bt':
-            def g(s, t, side=side):
-                a = -0.12 * dv_at(s) + t * 1.12 * dv_at(s)
-                return tuple(lifted(s, a if side == 'b' else 1 - a))
-            slab(part, mat, g, nu, 1, tt, inside, closed_u=closed_u, bevel=0.008, name='trim')
-        else:
-            u_edge = 0.0 if side == 'l' else 1.0
-            vb = dv_at(u_edge) if 'b' in sides else 0.0
-            vt = dv_at(u_edge) if 't' in sides else 0.0
+            def g(s_, t):
+                a = min(0.48, (d0 + t * (d1 - d0)) / length(lambda q: fn(s_, q)))
+                return tuple(lifted(s_, a if side == 'b' else 1 - a, lift))
+            slab(part, m, g, cols, 1, th_, inside, closed_u=closed_u, bevel=bevel, name=label, uvd=uvd)
+            return g, closed_u
+        u_edge = 0.0 if side == 'l' else 1.0
+        Lv = length(lambda q: fn(u_edge, q))
+        vb = min(0.45, d1 / Lv) if 'b' in sides else 0.0   # meet the b / t bands, don't overlap them
+        vt = min(0.45, d1 / Lv) if 't' in sides else 0.0
 
-            def g(s, t, side=side, vb=vb, vt=vt):
-                v = vb + (1 - vb - vt) * s
-                du = min(0.45, w / length(lambda q: fn(q, v)))
-                a = -0.12 * du + t * 1.12 * du
-                return tuple(lifted(a if side == 'l' else 1 - a, v))
-            slab(part, mat, g, max(3, nv), 1, tt, inside, bevel=0.008, name='trim')
+        def g(s_, t):
+            v = vb + (1 - vb - vt) * s_
+            a = min(0.48, (d0 + t * (d1 - d0)) / length(lambda q: fn(q, v)))
+            return tuple(lifted(a if side == 'l' else 1 - a, v, lift))
+        slab(part, m, g, rows, 1, th_, inside, bevel=bevel, name=label, uvd=uvd)
+        return g, False
+    for side in sides:
+        g, cl = band(side, -0.12 * w, w, mat, tt, plate_th - 0.012, 2.6, 0.008, 'trim')
+        if HIGH[0]:
+            # a fine steel bead running inside the trim, and rivets set along it
+            band(side, w + 0.022, w + 0.04, 'Steel', 0.014, plate_th - 0.005, 1.0, 0.005, 'bead')
+            n = int(length(lambda q: g(q, 0.5), 24) / 0.3)
+            for k in range(n):
+                q = (k + 0.5) / n
+                nrm = normal_at(g, q, 0.5, inside, cl)
+                rivet(part, 'Steel', tuple(Vector(g(q, 0.5)) + nrm * (tt - 0.004)), nrm, 0.017, flat=0.6)
 
 
 def finish(part, mat, bm, bevel, name):
@@ -192,7 +215,8 @@ def finish(part, mat, bm, bevel, name):
     if bevel:
         md = ob.modifiers.new('bevel', 'BEVEL')
         md.width = bevel
-        md.segments = 1   # a chamfer; the baked normal map rounds it off
+        md.segments = 3 if HIGH[0] else 1   # high pass: rounded; game mesh: a chamfer the normal map rounds off
+        md.profile = 0.6
         md.limit_method = 'ANGLE'
         md.angle_limit = math.radians(40)
     PIECES.append((part, ob))
@@ -265,10 +289,13 @@ def fin(part, mat, path, out, height, th, nu=32, taper=None, name='fin'):
 def rivet(part, mat, p, n, r=0.035, flat=0.55):
     bm = bmesh.new()
     uvl = bm.loops.layers.uv.new('UVMap')
-    bmesh.ops.create_uvsphere(bm, u_segments=10, v_segments=5, radius=r, calc_uvs=True)
+    dtl = bm.loops.layers.uv.new('Detail')
+    seg = (16, 8) if HIGH[0] else (10, 5)
+    bmesh.ops.create_uvsphere(bm, u_segments=seg[0], v_segments=seg[1], radius=r, calc_uvs=True)
     for f in bm.faces:
         for loop in f.loops:
             loop[uvl].uv = (loop[uvl].uv.x * TAU * r, loop[uvl].uv.y * math.pi * r * flat)
+            loop[dtl].uv = loop[uvl].uv
     n = Vector(n).normalized()
     rot = n.to_track_quat('Z', 'Y').to_matrix().to_4x4()
     for v in bm.verts:
@@ -352,12 +379,15 @@ def helmet():
     for t in (-140, -115, -65, -40):   # rivets along the brow
         x, y = se(math.radians(t), 2.4)
         rivet('Head', 'Purple', (x * (R + 0.11), y * (R + 0.11) * 1.08, 4.78), (x, y, 0), 0.028)
+    for s_ in (-1, 1):   # rosettes over the ears
+        rivet('Head', 'Purple', (s_ * (R + 0.06), 0.0, 4.42), (s_, 0, 0), 0.15, flat=0.3)
+        rivet('Head', 'Steel', (s_ * (R + 0.105), 0.0, 4.42), (s_, 0, 0), 0.05, flat=0.6)
     # hood behind the helm, as on the concept's back view
-    hood = lambda z: R + 0.1 + 0.2 * max(0.0, 4.3 - z)
-    wrap('Head', 'Cloth', (0, 0.05), 3.92, lambda d: 4.62 + 0.28 * math.sin(math.radians(d)) ** 2, hood,
-         lambda z: hood(z) * 1.1, 4, 176, ex=2.4, th=0.04, nu=30, nv=8,
-         extra=lambda d, z: 0.025 * math.sin(math.radians(d) * 8) * max(0.0, 4.8 - z), bevel=0.006, name='hood',
-         trim=T('t', w=0.05, th=0.025))
+    hood = lambda z: R + 0.12 + 0.3 * max(0.0, 4.2 - z)
+    wrap('Head', 'Cloth', (0, 0.06), 3.9, lambda d: 4.22 + 0.14 * math.sin(math.radians(d)) ** 2, hood,
+         lambda z: hood(z) * 1.12, 2, 178, ex=2.4, th=0.04, nu=36, nv=5,
+         extra=lambda d, z: 0.035 * math.sin(math.radians(d) * 11) * min(1.0, max(0.0, 4.4 - z) * 2), bevel=0.006,
+         name='cowl')
 
 
 def torso():
@@ -373,17 +403,21 @@ def torso():
     sheet('Torso', 'Steel', 'front', (0.5, 0), -0.98, 0.98, bot, lambda x: 3.78 + 0.2 * abs(x), hf, th=0.06, nu=22, nv=12,
           name='breast', trim=T('btlr'))
     sheet('Torso', 'Steel', 'back', (0.5, 0), -0.98, 0.98, bot, 3.96, hb, th=0.06, nu=18, nv=10, name='back', trim=T('btlr'))
+    # upper chest plate, layered over the breastplate and pointed at the bottom
+    hu = lambda x, z: hf(x, z) + 0.058
+    sheet('Torso', 'Steel', 'front', (0.5, 0), -0.98, 0.98, lambda x: 3.4 + 0.3 * abs(x), lambda x: 3.78 + 0.2 * abs(x), hu,
+          th=0.055, nu=22, nv=5, name='upper_chest', trim=T('btlr'))
     # the emblem: wings sweeping up across the chest, a spike down the middle
     lift = lambda x, z: hf(x, z) + 0.05
-    W = 0.82
-    zc = lambda x: 3.28 + 0.36 * (abs(x) / W) ** 1.5
-    hh = lambda x: 0.03 + 0.1 * (1 - abs(x) / W) ** 0.8
-    sheet('Torso', 'Purple', 'front', (0.5, 0), -W, W, lambda x: zc(x) - hh(x), lambda x: zc(x) + hh(x) * 0.7, lift, th=0.035,
+    W = 0.86
+    zc = lambda x: 3.02 + 0.3 * (abs(x) / W) ** 1.5
+    hh = lambda x: 0.035 + 0.15 * (1 - abs(x) / W) ** 0.8
+    sheet('Torso', 'PurplePolish', 'front', (0.5, 0), -W, W, lambda x: zc(x) - hh(x), lambda x: zc(x) + hh(x) * 0.7, lift, th=0.035,
           nu=24, nv=2, bevel=0.008, name='emblem_wings')
-    sheet('Torso', 'Purple', 'front', (0.5, 0), -0.17, 0.17, lambda x: 2.62 + 4.2 * abs(x), lambda x: 3.72 - 2.4 * abs(x),
+    sheet('Torso', 'PurplePolish', 'front', (0.5, 0), -0.22, 0.22, lambda x: 2.55 + 3.4 * abs(x), lambda x: 3.42 - 1.6 * abs(x),
           lift, th=0.04, nu=6, nv=8, bevel=0.008, name='emblem_spike')
     # back emblem: a downward arrow between the shoulder blades
-    sheet('Torso', 'Purple', 'back', (0.5, 0), -0.62, 0.62, lambda x: 2.78 + 0.85 * abs(x), lambda x: 3.25 + 0.5 * abs(x),
+    sheet('Torso', 'PurplePolish', 'back', (0.5, 0), -0.62, 0.62, lambda x: 2.78 + 0.85 * abs(x), lambda x: 3.25 + 0.5 * abs(x),
           lambda x, z: hb(x, z) + 0.05, th=0.035, nu=12, nv=4, bevel=0.008, name='back_emblem')
     # abdomen lames under the breastplate's point
     for face, h0 in (('front', 0.075), ('back', 0.07)):
@@ -404,8 +438,8 @@ def torso():
     sheet('Torso', 'Steel', 'front', (0.5, 0), -0.16, 0.16, 1.96, 2.24, lambda x, z: 0.145, th=0.03, nu=4, nv=3,
           name='buckle', trim=T('btlr', w=0.04, th=0.025))
     # skirt: long cloth panels front, back and sides with purple hems, steel tassets over the hips
-    fold = lambda x, z, k=13: 0.035 * math.sin(x * k) * min(1.0, (2.1 - z) * 1.5)
-    sheet('Torso', 'Cloth', 'front', (0.5, 0), -0.58, 0.58, lambda x: 0.72 + 0.55 * abs(x) / 0.58, 2.1,
+    fold = lambda x, z, k=13: 0.055 * math.sin(x * k) * min(1.0, (2.1 - z) * 1.5)
+    sheet('Torso', 'Cloth', 'front', (0.5, 0), -0.46, 0.46, lambda x: 0.72 + 0.5 * abs(x) / 0.46, 2.1,
           lambda x, z: 0.13 + 0.17 * (2.1 - z) + fold(x, z), th=0.03, nu=24, nv=10, bevel=0.006, name='skirt_front',
           trim=T('blr', w=0.06, th=0.025))
     sheet('Torso', 'Cloth', 'back', (0.5, 0), -0.98, 0.98, lambda x: 0.5 + 0.4 * abs(x), 2.1,
@@ -419,6 +453,13 @@ def torso():
             sheet('Torso', 'Steel', face, (1.0, 0), -0.52, 0.52, lambda x, zb=zb: zb + 0.08 * (1 - (x / 0.52) ** 2), zt,
                   lambda x, z, zt=zt, f=f: 0.04 + f + 0.24 * (zt - z), th=0.05, nu=8, nv=4, name='tasset',
                   trim=T('blr', w=0.055))
+    for sx in (1, -1):   # front tassets over the thighs: curved round the leg, pointed at the bottom
+        xc = 0.66 * sx
+        for zt, zb, f in ((1.98, 1.52, 0.12), (1.64, 1.16, 0.19)):
+            sheet('Torso', 'Steel', 'front', (0.5, 0), xc - 0.33, xc + 0.33,
+                  lambda x, zb=zb, xc=xc: zb + 0.14 * abs(x - xc) / 0.33, zt,
+                  lambda x, z, zt=zt, f=f, xc=xc: f + 0.13 * (1 - ((x - xc) / 0.36) ** 2) + 0.24 * (zt - z),
+                  th=0.05, nu=10, nv=4, name='tasset_f', trim=T('btlr', w=0.05))
     # the hood's drape over the upper back
     sheet('Torso', 'Cloth', 'back', (0.5, 0), -0.62, 0.62, lambda x: 3.45 + 0.85 * abs(x), 4.02,
           lambda x, z: hb(x, z) + 0.1 + 0.08 * (z - 3.45), th=0.035, nu=12, nv=6, bevel=0.006, name='drape')
@@ -428,18 +469,33 @@ def arm():
     """the left arm (+X); the right one is its mirror"""
     cx = 1.5
     # black cloth sleeve under it all
-    wrap('LeftArm', 'Fabric', (cx + 0.015, 0), 2.7, 3.98, 0.505, 0.525, -180, 180, ex=4.5, th=0.03, nu=30, nv=3, bevel=0.006,
+    wrap('LeftArm', 'Fabric', (cx, 0), 2.0, 3.98, 0.535, 0.545, -180, 180, ex=8, th=0.03, nu=30, nv=3, bevel=0.006,
          closed=True,
          extra=lambda d, z: 0.012 * math.sin(math.radians(d) * 9 + z * 20), name='sleeve')
     # pauldron: a big dome and two lames below it, each pointed at the outside, all trimmed
-    cap = dome(0.75, 3.95, 0.48)
-    wrap('LeftArm', 'Steel', (cx + 0.02, 0), lambda d: 3.56 - 0.12 * max(0.0, math.cos(math.radians(d))) ** 2, 4.43, cap,
-         lambda z: cap(z) * 0.95, -128, 128, ex=2.6, th=0.06, nu=34, nv=10, name='pauldron', trim=T('blr'))
-    for zb, zt, rb, k in ((3.2, 3.62, 0.88, 1), (2.9, 3.3, 0.92, 2)):
+    def points(d, span, n, depth):   # n pointed scallops along an edge spanning -span..span degrees
+        x = (d + span) / (2 * span) * n
+        return depth * (1 - abs((x % 1.0) - 0.5) * 2)
+    cap = dome(0.76, 3.98, 0.5)
+    wrap('LeftArm', 'Steel', (cx + 0.02, 0),
+         lambda d: 3.6 - 0.16 * max(0.0, math.cos(math.radians(d))) ** 2 - points(d, 128, 3, 0.08), 4.48, cap,
+         lambda z: cap(z) * 0.95, -128, 128, ex=2.6, th=0.06, nu=40, nv=10, name='pauldron', trim=T('blr'))
+    # a crest running front to back over the dome
+    ry = 0.76 * 0.95 + 0.05
+
+    def crest(s_):
+        y = (2 * s_ - 1) * 0.92 * ry
+        return (cx + 0.02, y, 3.98 + (0.5 + 0.05) * math.sqrt(max(0.0, 1 - (y / ry) ** 2)))
+    crest_out = lambda s_: tuple(Vector((0, crest(s_)[1] / ry ** 2, (crest(s_)[2] - 3.98) / 0.55 ** 2)).normalized())
+    fin('LeftArm', 'Steel', crest, crest_out, 0.09, 0.06, nu=24, taper=lambda s_: 0.35 + 0.65 * math.sin(s_ * math.pi), name='crest')
+    fin('LeftArm', 'Purple', lambda s_: tuple(Vector(crest(s_)) + Vector(crest_out(s_)) * (0.058 * (0.35 + 0.65 * math.sin(s_ * math.pi)))),
+        crest_out, 0.035, 0.075, nu=24, name='crest_edge')
+    for k, (zb, rb) in enumerate(((3.3, 0.88), (3.0, 0.92), (2.72, 0.96)), 1):
         R = lambda z, zb=zb, rb=rb: rb - 0.42 * (z - zb)
-        wrap('LeftArm', 'Steel', (cx + 0.02 + 0.03 * k, 0), lambda d, zb=zb: zb - 0.13 * max(0.0, math.cos(math.radians(d))) ** 2,
-             zt, R, lambda z, R=R: R(z) * 0.93, -112 + 8 * k, 112 - 8 * k, ex=2.6, th=0.055, nu=30, nv=4, name='lame',
-             trim=T('blr'))
+        span = 116 - 10 * k
+        wrap('LeftArm', 'Steel', (cx + 0.02 + 0.05 * k, 0),
+             lambda d, zb=zb, span=span: zb - 0.14 * max(0.0, math.cos(math.radians(d))) ** 2 - points(d, span, 3, 0.06),
+             zb + 0.42, R, lambda z, R=R: R(z) * 0.93, -span, span, ex=2.6, th=0.055, nu=34, nv=4, name='lame', trim=T('blr'))
     for t in (-60, -25, 25, 60):   # rivets round the dome
         x, y = se(math.radians(t), 2.6)
         rivet('LeftArm', 'Purple', (cx + 0.02 + x * 0.82, y * 0.78, 3.78), (x, y, 0.1), 0.03)
@@ -453,9 +509,9 @@ def arm():
     # bracer, flared toward the elbow with a ridge down the outside
     B = lambda z: 0.55 + 0.08 * (z - 2.2) / 0.62
     ridge = lambda d, z: 0.06 * max(0.0, math.cos(math.radians(d))) ** 6
-    wrap('LeftArm', 'Steel', (cx + 0.02, 0), 2.2, lambda d: 2.82 + 0.06 * max(0.0, math.cos(math.radians(d))) ** 2, B,
+    wrap('LeftArm', 'Steel', (cx + 0.02, 0), 2.2, lambda d: 2.72 + 0.06 * max(0.0, math.cos(math.radians(d))) ** 2, B,
          lambda z: B(z) + 0.01, -150, 150, ex=4.5, th=0.05, nu=36, nv=5, extra=ridge, name='bracer', trim=T('bt', w=0.055))
-    for z in (2.46,):   # a leather strap
+    for z in (2.42,):   # a leather strap
         wrap('LeftArm', 'Leather', (cx + 0.02, 0), z, z + 0.07, lambda zz: B(zz) + 0.045, lambda zz: B(zz) + 0.055, -150, 150,
              ex=4.5, th=0.025, nu=36, nv=1, extra=ridge, bevel=0.005, name='strap')
     # gauntlet: leather glove and steel knuckle plate
@@ -467,7 +523,7 @@ def arm():
 def leg():
     """the left leg (+X); the right one is its mirror"""
     cx = 0.52
-    wrap('LeftLeg', 'Fabric', (cx, 0), 0.9, 2.0, 0.51, 0.53, -180, 180, ex=4.5, th=0.03, nu=30, nv=3, bevel=0.006, closed=True,
+    wrap('LeftLeg', 'Fabric', (0.5, 0), 0.3, 2.0, 0.535, 0.545, -180, 180, ex=8, th=0.03, nu=30, nv=3, bevel=0.006, closed=True,
          extra=lambda d, z: 0.012 * math.sin(math.radians(d) * 7 + z * 14), name='trousers')
     # cuisse over the front of the thigh
     wrap('LeftLeg', 'Steel', (cx, 0), 1.36, 1.92, 0.585, 0.585, -150, -25, ex=4.0, th=0.05, nu=20, nv=4, name='cuisse',
@@ -490,18 +546,62 @@ def leg():
     # boot: leather shaft, steel toe, purple disc on the outer ankle
     wrap('LeftLeg', 'Leather', (cx, 0), 0.0, 0.36, 0.575, 0.585, -150, 150, ex=5, th=0.045, nu=36, nv=3, name='boot')
     wrap('LeftLeg', 'Leather', (cx, 0), -0.0, 0.06, 0.6, 0.62, -150, 150, ex=5, th=0.03, nu=36, nv=1, name='sole')
-    sheet('LeftLeg', 'Steel', 'front', (0.5, cx), -0.46, 0.46, 0.04, 0.3,
-          lambda x, z: 0.09 + 0.1 * max(0.0, 1 - z / 0.3) ** 1.5 * max(0.0, 1 - (x / 0.48) ** 4), th=0.05, nu=10, nv=4, name='toe',
-          trim=T('t', w=0.045))
+    for k, (zb, zt) in enumerate(((0.2, 0.34), (0.11, 0.25), (0.03, 0.16))):
+        sheet('LeftLeg', 'Steel', 'front', (0.5, cx), -0.47, 0.47, zb, zt,
+              lambda x, z, k=k, zt=zt: 0.08 + 0.05 * k + 0.12 * (zt - z) * (1 - (x / 0.5) ** 4), th=0.045, nu=10, nv=2,
+              name='sabaton', trim=T('b', w=0.035, th=0.025))
     rivet('LeftLeg', 'Purple', (cx + 0.63, 0, 0.2), (1, 0, 0), 0.1, flat=0.5)
 
 
 # ------------------------------------------------------------------ materials
 
 MATS = {}
+FILIGREE_PERIOD = 0.24   # studs along a trim per repeat of the engraving
+TRIM_UV_W = 0.065 * 1.12  # studs across a trim (its Detail-UV V runs 0 .. this)
 
 
-def mk_material(name, base1, base2, worn, rough, metal, bump, kind):
+def filigree_image(w=384, h=128):
+    """a tileable strip of engraved scrollwork: a wavy stem throwing off spiral tendrils with leaf
+    tips, between two border lines. 1 = groove (cut into the metal), 0 = polished face."""
+    import numpy as np
+    asp = w / h
+    X, Y = np.meshgrid((np.arange(w) + 0.5) / h, (np.arange(h) + 0.5) / h)   # units of strip height
+    pts = []
+    xs = np.linspace(-0.2, asp + 0.2, 500)
+    pts.append(np.stack([xs, 0.5 + 0.17 * np.sin(2 * np.pi * xs / asp * 2)], 1))   # the stem, two waves a tile
+    for k in range(4):   # a spiral tendril off each crest and trough, curling the other way each time
+        x0 = (k * 0.5 + 0.25) * asp / 2
+        up = 1 if k % 2 == 0 else -1
+        cx, cy = x0 + 0.2 * asp / 8, 0.5 - up * 0.06
+        ph = np.linspace(0, 2.3 * np.pi, 160)
+        r = 0.2 * (1 - ph / (2.6 * np.pi))
+        a0 = np.pi / 2 * up
+        pts.append(np.stack([cx + r * np.cos(a0 - up * ph) * 1.2, cy + r * np.sin(a0 - up * ph)], 1))
+        lx = x0 - 0.12 * asp / 8   # a leaf on the other side of the stem
+        t = np.linspace(-1, 1, 60)
+        pts.append(np.stack([lx + 0.16 * t, 0.5 + up * 0.17 + up * 0.09 * (1 - t * t)], 1))
+    for by in (0.07, 0.93):   # border lines
+        pts.append(np.stack([xs, np.full_like(xs, by)], 1))
+    P = np.concatenate(pts)
+    P = np.concatenate([P, P + [asp, 0], P - [asp, 0]])   # wrap so the tile repeats seamlessly
+    d = np.full(X.shape, 9.0)
+    for c in np.array_split(P, 40):
+        dd = np.sqrt((X[..., None] - c[:, 0]) ** 2 + (Y[..., None] - c[:, 1]) ** 2).min(-1)
+        d = np.minimum(d, dd)
+    width = 0.032
+    g = np.clip((width - d) / (width * 0.6), 0, 1)
+    g = g * g * (3 - 2 * g)
+    img = bpy.data.images.new('Filigree', w, h, alpha=False, float_buffer=True)
+    img.colorspace_settings.name = 'Non-Color'
+    px = np.zeros((h, w, 4), np.float32)
+    px[..., 0] = px[..., 1] = px[..., 2] = g
+    px[..., 3] = 1
+    img.pixels = px.ravel()
+    img.pack()
+    return img
+
+
+def mk_material(name, kind, c1, c2, edge_col, rough, metal, groove_col=None, engraved=True):
     m = bpy.data.materials.new(name)
     m.use_nodes = True
     nt = m.node_tree
@@ -511,8 +611,17 @@ def mk_material(name, base1, base2, worn, rough, metal, bump, kind):
     bsdf = N.new('ShaderNodeBsdfPrincipled')
     L.new(bsdf.outputs[0], out.inputs['Surface'])
     tc = N.new('ShaderNodeTexCoord')
+    det = N.new('ShaderNodeUVMap')
+    det.uv_map = 'Detail'
 
-    def noise(scale, detail=6, rough_=0.55, vec=None):
+    def mapped(vec, scale, rot=(0, 0, 0)):
+        mp = N.new('ShaderNodeMapping')
+        mp.inputs['Scale'].default_value = scale
+        mp.inputs['Rotation'].default_value = rot
+        L.new(vec, mp.inputs['Vector'])
+        return mp.outputs['Vector']
+
+    def noise(scale, detail=4, rough_=0.5, vec=None):
         n = N.new('ShaderNodeTexNoise')
         n.inputs['Scale'].default_value = scale
         n.inputs['Detail'].default_value = detail
@@ -520,9 +629,9 @@ def mk_material(name, base1, base2, worn, rough, metal, bump, kind):
         L.new(vec or tc.outputs['Object'], n.inputs['Vector'])
         return n.outputs['Fac']
 
-    def math_(op, a, b=None, clamp=False):
+    def op(kind_, a, b=None, clamp=False):
         n = N.new('ShaderNodeMath')
-        n.operation = op
+        n.operation = kind_
         n.use_clamp = clamp
         for i, x in enumerate((a, b)):
             if x is None:
@@ -533,7 +642,7 @@ def mk_material(name, base1, base2, worn, rough, metal, bump, kind):
                 L.new(x, n.inputs[i])
         return n.outputs[0]
 
-    def mrange(x, a, b, c=0.0, d=1.0):
+    def rng(x, a, b, c=0.0, d=1.0):
         n = N.new('ShaderNodeMapRange')
         n.clamp = True
         L.new(x, n.inputs['Value'])
@@ -541,9 +650,10 @@ def mk_material(name, base1, base2, worn, rough, metal, bump, kind):
         n.inputs['To Min'].default_value, n.inputs['To Max'].default_value = c, d
         return n.outputs['Result']
 
-    def mixc(f, a, b):
+    def mix(f, a, b, blend='MIX'):
         n = N.new('ShaderNodeMix')
         n.data_type = 'RGBA'
+        n.blend_type = blend
         if isinstance(f, (int, float)):
             n.inputs['Factor'].default_value = f
         else:
@@ -555,94 +665,103 @@ def mk_material(name, base1, base2, worn, rough, metal, bump, kind):
                 L.new(c, sock)
         return n.outputs[2]
 
+    def grey(x):
+        c = N.new('ShaderNodeCombineColor')
+        for i in range(3):
+            L.new(x, c.inputs[i])
+        return c.outputs[0]
+
     geo = N.new('ShaderNodeNewGeometry')
-    # edge wear: where a wide bevel normal turns away from the true normal
+    # edges: where a wide bevel normal turns away from the true normal
     bev = N.new('ShaderNodeBevel')
-    bev.inputs['Radius'].default_value = 0.014
+    bev.inputs['Radius'].default_value = 0.012
     bev.samples = 8
     dot = N.new('ShaderNodeVectorMath')
     dot.operation = 'DOT_PRODUCT'
     L.new(bev.outputs['Normal'], dot.inputs[0])
     L.new(geo.outputs['Normal'], dot.inputs[1])
-    edge = mrange(dot.outputs['Value'], 0.995, 0.93)
-    breakup = mrange(noise(9, 8, 0.7), 0.42, 0.62)
-    wear = math_('MULTIPLY', edge, breakup, clamp=True)
-    # scratches: thin cell edges, masked into patches
-    # scratches: two sets of long thin streaks at different angles, gathered into patches
-    streaks = []
-    for rot in ((0.0, 0.0, 0.0), (0.9, 0.4, 1.1)):
-        mp = N.new('ShaderNodeMapping')
-        mp.inputs['Rotation'].default_value = rot
-        mp.inputs['Scale'].default_value = (70.0, 70.0, 1.5)
-        L.new(tc.outputs['Object'], mp.inputs['Vector'])
-        streaks.append(mrange(noise(1.0, 2, 0.5, vec=mp.outputs['Vector']), 0.66, 0.72))
-    scratch = math_('MULTIPLY', math_('MAXIMUM', *streaks), mrange(noise(2.5, 3), 0.48, 0.62), clamp=True)
-    if kind != 'metal':
-        wear = math_('MULTIPLY', wear, 0.35)
-    if kind in ('metal',):
-        wear = math_('MAXIMUM', wear, math_('MULTIPLY', scratch, 0.45))
-    # cavity: darken creases and seams
+    edge = rng(dot.outputs['Value'], 0.998, 0.96)
+    # cavity: creases and the gaps between plates
     ao = N.new('ShaderNodeAmbientOcclusion')
     ao.only_local = True
-    ao.inputs['Distance'].default_value = 0.12
-    ao.samples = 8
-    cav = mrange(ao.outputs['AO'], 0.2, 1.0, 0.45, 1.0)
-    # colour
-    var = noise(4, 6, 0.6)
-    col = mixc(var, lin(base1), lin(base2))
-    col = mixc(wear, col, lin(worn))
-    cavc = N.new('ShaderNodeCombineColor')
-    for i in range(3):
-        L.new(cav, cavc.inputs[i])
-    col_out = N.new('ShaderNodeMix')
-    col_out.data_type = 'RGBA'
-    col_out.blend_type = 'MULTIPLY'
-    col_out.inputs['Factor'].default_value = 1.0
-    L.new(col, col_out.inputs[6])
-    L.new(cavc.outputs[0], col_out.inputs[7])
-    col = col_out.outputs[2]
-    # roughness
-    r0, r1, rw = rough
-    rgh = mrange(noise(6, 5, 0.5), 0.3, 0.7, r0, r1)
-    rgh = math_('ADD', rgh, math_('MULTIPLY', wear, rw - r0), clamp=True)
-    # normal: fine surface texture, scratches cut in, all on top of rounded edges
-    if kind == 'cloth':
-        w1 = N.new('ShaderNodeTexWave')
-        w1.inputs['Scale'].default_value = 90
-        w1.bands_direction = 'X'
-        w2 = N.new('ShaderNodeTexWave')
-        w2.inputs['Scale'].default_value = 90
-        w2.bands_direction = 'Z'
-        for w in (w1, w2):
-            L.new(tc.outputs['Object'], w.inputs['Vector'])
-        hgt = math_('ADD', math_('MULTIPLY', math_('MULTIPLY', w1.outputs['Fac'], w2.outputs['Fac']), 1.0),
-                    math_('MULTIPLY', noise(2.5, 4), 2.0))
+    ao.inputs['Distance'].default_value = 0.08
+    ao.samples = 16
+    cav = rng(ao.outputs['AO'], 0.15, 1.0, 0.35, 1.0)
+    low = noise(3.0, 3, 0.5)
+    r0, r1 = rough
+    height = None
+    if kind == 'steel':
+        # satin gunmetal: brushed grain along each plate, faint forging waves, polished edges
+        grain = noise(1.0, 3, 0.6, vec=mapped(det.outputs['UV'], (6.0, 420.0, 1.0)))
+        grain2 = noise(1.0, 2, 0.5, vec=mapped(det.outputs['UV'], (2.0, 160.0, 1.0)))
+        col = mix(op('MULTIPLY', low, 0.6), lin(c1), lin(c2))
+        col = mix(op('MULTIPLY', edge, 0.55), col, lin(edge_col))
+        rgh = op('ADD', rng(grain, 0.3, 0.7, r0 - 0.025, r0 + 0.025), rng(grain2, 0.35, 0.65, -0.02, 0.02))
+        rgh = op('ADD', rgh, op('MULTIPLY', low, r1 - r0))
+        rgh = op('SUBTRACT', rgh, op('MULTIPLY', edge, 0.12), clamp=True)
+        height = op('ADD', op('MULTIPLY', grain, 0.04), op('MULTIPLY', noise(5.0, 2, 0.4), 0.5))
+        bump_strength, bump_dist = 0.1, 0.004
+    elif kind == 'purple':
+        # engraved scrollwork: dark rough grooves cut into a polished face, raised edges brightest
+        fil = N.new('ShaderNodeTexImage')
+        fil.image = FILIGREE
+        fil.interpolation = 'Cubic'
+        fil.extension = 'REPEAT'
+        L.new(mapped(det.outputs['UV'], (1.0 / FILIGREE_PERIOD, 1.0 / TRIM_UV_W, 1.0)), fil.inputs['Vector'])
+        groove = fil.outputs['Color']
+        sep = N.new('ShaderNodeSeparateColor')
+        L.new(groove, sep.inputs[0])
+        g = sep.outputs[0] if engraved else op('MULTIPLY', sep.outputs[0], 0.0)
+        col = mix(op('MULTIPLY', low, 0.7), lin(c1), lin(c2))
+        col = mix(op('MULTIPLY', edge, 0.6), col, lin(edge_col))
+        col = mix(g, col, lin(groove_col))
+        rgh = op('ADD', rng(low, 0.3, 0.7, r0, r0 + 0.06), op('MULTIPLY', g, r1 - r0), clamp=True)
+        rgh = op('SUBTRACT', rgh, op('MULTIPLY', edge, 0.08), clamp=True)
+        height = op('ADD', op('MULTIPLY', g, -1.0), op('MULTIPLY', noise(40.0, 3), 0.03))
+        bump_strength, bump_dist = 0.55, 0.0025
     elif kind == 'leather':
         cells = N.new('ShaderNodeTexVoronoi')
-        cells.inputs['Scale'].default_value = 60
+        cells.inputs['Scale'].default_value = 70
         L.new(tc.outputs['Object'], cells.inputs['Vector'])
-        hgt = math_('ADD', math_('MULTIPLY', cells.outputs['Distance'], 0.6), math_('MULTIPLY', noise(140, 4), 0.4))
-    else:
-        hgt = math_('SUBTRACT', math_('MULTIPLY', noise(45, 8, 0.6), 0.2), math_('MULTIPLY', scratch, 0.35))
+        wrinkle = noise(9.0, 6, 0.65)
+        col = mix(op('MULTIPLY', low, 0.8), lin(c1), lin(c2))
+        col = mix(op('MULTIPLY', edge, 0.5), col, lin(edge_col))
+        rgh = op('ADD', rng(wrinkle, 0.3, 0.7, r0, r1), op('MULTIPLY', edge, -0.15), clamp=True)
+        height = op('ADD', op('MULTIPLY', cells.outputs['Distance'], 0.5), op('MULTIPLY', wrinkle, 0.6))
+        bump_strength, bump_dist = 0.3, 0.004
+    else:   # cloth: a fine twill weave
+        uv = det.outputs['UV']
+        wa = N.new('ShaderNodeTexWave')
+        wa.inputs['Scale'].default_value = 1.0
+        wa.bands_direction = 'DIAGONAL'
+        L.new(mapped(uv, (110.0, 110.0, 1.0)), wa.inputs['Vector'])
+        wb = N.new('ShaderNodeTexWave')
+        wb.inputs['Scale'].default_value = 1.0
+        wb.bands_direction = 'X'
+        L.new(mapped(uv, (220.0, 220.0, 1.0)), wb.inputs['Vector'])
+        weave = op('MULTIPLY', wa.outputs['Fac'], wb.outputs['Fac'])
+        col = mix(op('MULTIPLY', low, 0.8), lin(c1), lin(c2))
+        col = mix(op('MULTIPLY', weave, 0.25), col, lin(edge_col))
+        rgh = rng(weave, 0.0, 1.0, r0, r1)
+        height = op('ADD', op('MULTIPLY', weave, 0.6), op('MULTIPLY', noise(4.0, 3), 0.4))
+        bump_strength, bump_dist = 0.35, 0.003
+    col = mix(1.0, col, grey(cav), 'MULTIPLY')
     rb = N.new('ShaderNodeBevel')
-    rb.inputs['Radius'].default_value = 0.008
+    rb.inputs['Radius'].default_value = 0.006
     rb.samples = 8
     bn = N.new('ShaderNodeBump')
-    bn.inputs['Strength'].default_value = bump
-    bn.inputs['Distance'].default_value = 0.004
-    L.new(hgt, bn.inputs['Height'])
+    bn.inputs['Strength'].default_value = bump_strength
+    bn.inputs['Distance'].default_value = bump_dist
+    L.new(height, bn.inputs['Height'])
     L.new(rb.outputs['Normal'], bn.inputs['Normal'])
-    # outputs, tagged so the baker can find them
     tags = {}
-    for tag, sock in (('COL', col), ('ROUGH', rgh), ('METAL', None), ('NRM', bn.outputs['Normal'])):
-        rr = N.new('NodeReroute')
-        rr.name = 'OUT_' + tag
-        if sock is not None:
-            L.new(sock, rr.inputs[0])
-        tags[tag] = rr
     mv = N.new('ShaderNodeValue')
     mv.outputs[0].default_value = metal
-    L.new(mv.outputs[0], tags['METAL'].inputs[0])
+    for tag, sock in (('COL', col), ('ROUGH', rgh), ('METAL', mv.outputs[0]), ('NRM', bn.outputs['Normal'])):
+        rr = N.new('NodeReroute')
+        rr.name = 'OUT_' + tag
+        L.new(sock, rr.inputs[0])
+        tags[tag] = rr
     L.new(tags['COL'].outputs[0], bsdf.inputs['Base Color'])
     L.new(tags['ROUGH'].outputs[0], bsdf.inputs['Roughness'])
     L.new(tags['METAL'].outputs[0], bsdf.inputs['Metallic'])
@@ -651,12 +770,19 @@ def mk_material(name, base1, base2, worn, rough, metal, bump, kind):
     return m
 
 
+FILIGREE = None
+
+
 def materials():
-    mk_material('Steel', '#25262c', '#30323a', '#8e909a', (0.3, 0.5, 0.2), 1.0, 0.25, 'metal')
-    mk_material('Purple', '#4a1a8c', '#6a2cbf', '#c8a4ff', (0.22, 0.34, 0.16), 1.0, 0.18, 'metal')
-    mk_material('Leather', '#0e0a08', '#16110d', '#2a201b', (0.55, 0.78, 0.45), 0.0, 0.35, 'leather')
-    mk_material('Cloth', '#14061f', '#1d0930', '#35185a', (0.88, 1.0, 0.85), 0.0, 0.3, 'cloth')
-    mk_material('Fabric', '#111114', '#18181d', '#2a2a32', (0.8, 0.95, 0.8), 0.0, 0.3, 'cloth')
+    global FILIGREE
+    FILIGREE = filigree_image()
+    mk_material('Steel', 'steel', '#3a3c43', '#45474f', '#8d9099', (0.36, 0.44), 1.0)
+    mk_material('Purple', 'purple', '#6a2fb8', '#5a27a0', '#c4a2f5', (0.2, 0.62), 1.0, groove_col='#120720')
+    mk_material('PurplePolish', 'purple', '#6a2fb8', '#5a27a0', '#c4a2f5', (0.18, 0.3), 1.0, groove_col='#120720',
+                engraved=False)
+    mk_material('Leather', 'leather', '#120d0a', '#1a130f', '#30251f', (0.5, 0.72), 0.0)
+    mk_material('Cloth', 'cloth', '#1a0830', '#230b40', '#341457', (0.78, 0.95), 0.0)
+    mk_material('Fabric', 'cloth', '#121216', '#18181e', '#26262e', (0.8, 0.95), 0.0)
 
 
 # ------------------------------------------------------------------ assembly
@@ -677,7 +803,7 @@ def mirror_left_to_right():
         PIECES.append((part.replace('Left', 'Right'), cp))
 
 
-def join_parts():
+def join_parts(prefix='Armor_'):
     dg = bpy.context.evaluated_depsgraph_get()
     out = {}
     for part in PARTS:
@@ -696,12 +822,12 @@ def join_parts():
             bpy.data.meshes.remove(me)
         for ob in obs:
             bpy.data.objects.remove(ob)
-        me = bpy.data.meshes.new('Armor_' + part)
+        me = bpy.data.meshes.new(prefix + part)
         bm.to_mesh(me)
         bm.free()
         for m in mats:
             me.materials.append(m)
-        ob = bpy.data.objects.new('Armor_' + part, me)
+        ob = bpy.data.objects.new(prefix + part, me)
         bpy.context.scene.collection.objects.link(ob)
         # smooth shading with hard edges past 35 degrees
         for p in me.polygons:
@@ -719,13 +845,19 @@ def join_parts():
     return out
 
 
-def build():
-    materials()
+def pieces():
     helmet()
     torso()
     arm()
     leg()
     mirror_left_to_right()
+
+
+def build(high=True):
+    """the game meshes (Armor_*) and, unless high=False, the detailed pass baked onto them (High_*)"""
+    materials()
+    HIGH[0] = False
+    pieces()
     if STAGE == 'stats':
         dg = bpy.context.evaluated_depsgraph_get()
         rows = {}
@@ -735,7 +867,15 @@ def build():
             rows[k] = rows.get(k, 0) + sum(len(p.vertices) - 2 for p in me.polygons)
         for (part, name), n in sorted(rows.items(), key=lambda r: -r[1]):
             print(f'{part:10s} {name:14s} {n}')
-    return join_parts()
+    low = join_parts('Armor_')
+    if not high:
+        return low, {}
+    PIECES.clear()
+    HIGH[0] = True
+    pieces()
+    hi = join_parts('High_')
+    HIGH[0] = False
+    return low, hi
 
 
 # ------------------------------------------------------------------ uv + bake
@@ -752,33 +892,45 @@ def unwrap(ob):
         ob.select_set(False)
 
 
-def bake(objs, res):
+def bake(objs, highs, res):
+    """bake each High_ mesh onto its Armor_ mesh: normals, and colour / roughness / metalness through
+    an emission pass, so every engraving, bead, rivet and rounded edge lands in the maps"""
     sc = bpy.context.scene
-    sc.render.bake.margin = 12
-    sc.render.bake.use_clear = True
+    bk = sc.render.bake
+    bk.margin = 12
+    bk.use_clear = True
+    bk.use_selected_to_active = True
+    bk.cage_extrusion = 0.03
+    bk.max_ray_distance = 0.08
     os.makedirs(OUT, exist_ok=True)
     maps = {}
     for part, ob in objs.items():
+        hi = highs[part]
         unwrap(ob)
-        for ob2 in bpy.data.objects:
-            ob2.select_set(False)
-        ob.select_set(True)
-        bpy.context.view_layer.objects.active = ob
         imgs = {}
         for ch, nonc in (('Color', False), ('Normal', True), ('Roughness', True), ('Metalness', True)):
             img = bpy.data.images.new(f'{ob.name}_{ch}', res, res, alpha=False)
             img.colorspace_settings.name = 'Non-Color' if nonc else 'sRGB'
             img.generated_color = (0.5, 0.5, 1, 1) if ch == 'Normal' else (0, 0, 0, 1)
             imgs[ch] = img
+        # the game mesh gets a bare material whose only job is to hold the target image
+        tm = bpy.data.materials.new(ob.name + '_Target')
+        tm.use_nodes = True
+        tnode = tm.node_tree.nodes.new('ShaderNodeTexImage')
+        tm.node_tree.nodes.active = tnode
+        ob.data.materials.clear()
+        ob.data.materials.append(tm)
+        for o in bpy.data.objects:
+            o.select_set(False)
+        hi.select_set(True)
+        ob.select_set(True)
+        bpy.context.view_layer.objects.active = ob
         for ch, img in imgs.items():
+            tnode.image = img
             restore = []
-            for m in ob.data.materials:
-                nt = m.node_tree
-                tgt = nt.nodes.get('BAKE_TARGET') or nt.nodes.new('ShaderNodeTexImage')
-                tgt.name = 'BAKE_TARGET'
-                tgt.image = img
-                nt.nodes.active = tgt
-                if ch != 'Normal':
+            if ch != 'Normal':
+                for m in hi.data.materials:
+                    nt = m.node_tree
                     em = nt.nodes.get('BAKE_EMIT') or nt.nodes.new('ShaderNodeEmission')
                     em.name = 'BAKE_EMIT'
                     out = next(n for n in nt.nodes if n.type == 'OUTPUT_MATERIAL')
@@ -789,10 +941,10 @@ def bake(objs, res):
                     restore.append((nt, old, out))
             if ch == 'Normal':
                 sc.cycles.samples = 16
-                bpy.ops.object.bake(type='NORMAL', normal_space='TANGENT', margin=12)
+                bpy.ops.object.bake(type='NORMAL', normal_space='TANGENT', margin=12, use_selected_to_active=True)
             else:
-                sc.cycles.samples = 16 if ch == 'Color' else 4
-                bpy.ops.object.bake(type='EMIT', margin=12)
+                sc.cycles.samples = 24 if ch == 'Color' else 8
+                bpy.ops.object.bake(type='EMIT', margin=12, use_selected_to_active=True)
             for nt, old, out in restore:
                 nt.links.new(old, out.inputs['Surface'])
             img.filepath_raw = os.path.join(OUT, f'{ob.name}_{ch}.png')
@@ -800,7 +952,9 @@ def bake(objs, res):
             img.save()
             print('BAKED', img.name, flush=True)
         maps[part] = imgs
+        hi.select_set(False)
         ob.select_set(False)
+        hi.hide_render = True
     return maps
 
 
@@ -948,17 +1102,19 @@ def export(objs, refs):
 
 def main():
     reset()
-    objs = build()
+    objs, highs = build(high=STAGE != 'stats')
     refs = load_rig()
     os.makedirs(OUT, exist_ok=True)
-    for ob in objs.values():
+    for ob in list(objs.values()) + list(highs.values()):
         print(ob.name, 'tris', sum(len(p.vertices) - 2 for p in ob.data.polygons), flush=True)
     if STAGE == 'stats':
         return
-    if STAGE == 'preview':
+    if STAGE == 'preview':   # the detailed pass with live materials
+        for ob in objs.values():
+            ob.hide_render = True
         preview(os.path.join(OUT, 'preview.png'), samples=32)
         return
-    maps = bake(objs, RES)
+    maps = bake(objs, highs, RES)
     baked_materials(objs, maps)
     preview(os.path.join(OUT, 'preview.png'))
     export(objs, refs)
