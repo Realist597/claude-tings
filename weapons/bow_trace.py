@@ -119,9 +119,10 @@ def outline(mask, tol=0.6, min_area=40):
     return polys, soft
 
 
-def triangulate(polys, soft, max_area):
-    """a quality (no slivers) triangulation of the silhouette; returns vertices, triangles, and which
-    vertices lie on the outline"""
+def triangulate(polys, soft, max_area=None):
+    """triangulate the silhouette: with max_area, a quality mesh (no slivers, interior points added);
+    without, just its outline filled with as few triangles as possible (for flat faces). Returns
+    vertices, triangles, which vertices lie on the outline, and the outline's segments"""
     import triangle as tr
     verts, segs, holes = [], [], []
     for p in polys:
@@ -136,7 +137,7 @@ def triangulate(polys, soft, max_area):
     data = dict(vertices=np.array(verts), segments=np.array(segs))
     if holes:
         data['holes'] = np.array(holes)
-    out = tr.triangulate(data, f'pq30a{max_area:.1f}')
+    out = tr.triangulate(data, f'pq30a{max_area:.1f}' if max_area else 'p')
     V, T = out['vertices'], out['triangles']
     on_edge = np.zeros(len(V), bool)
     on_edge[np.unique(out['segments'])] = True

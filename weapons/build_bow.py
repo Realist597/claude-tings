@@ -39,8 +39,9 @@ am.PARTS.update({'Arrow': ((3, 0, 0), None)})
 ARROW_X = 3.0   # where the arrow stands beside the bow in the previews (moved back to the origin on export)
 
 STRING_STUDS = 4.0                   # how long the string is in Roblox: sets the bow's size
-SHARP_ANGLE = 20                     # auto smooth: edges bending more than this stay sharp
-MAX_AREA = 145                       # largest triangle (in 2x-traced pixels): sets the mesh's density
+SHARP_ANGLE = 30                     # auto smooth: edges bending more than this stay sharp
+HALF_THICK = 0.032                   # the bow's faces sit this far either side of its centre plane (studs)
+CHAMFER = 0.016                      # width of the bevel round its edges (studs)
 EMISSIVE_STRENGTH = 1.6              # for the previews; set SurfaceAppearance.EmissiveStrength to taste in Studio
 
 
@@ -219,27 +220,23 @@ def bow_textures(sym):
 
 
 def bow_mesh(sym, g, S):
-    """the symmetric silhouette as a blade-like solid: a quality triangulation of its precise outline,
-    front and back faces drawn apart by the distance to the edge -- a sharp ridge down the middle of every
-    limb, blade and feather, tapering to a thin edge -- and a thin rim round it"""
+    """the symmetric silhouette as a hard-surface solid: its precise outline filled with as few triangles
+    as possible, perfectly flat front and back faces at one thickness, and a crisp chamfer round every
+    edge; auto smoothed, so the faces stay flat and the chamfers catch sharp highlights"""
     polys, soft = bt.outline(sym['mask'])
-    V, T, on_edge, segs = bt.triangulate(polys, soft, MAX_AREA)
-    dist = ndi.distance_transform_edt(sym['mask'] > 0.5)
-    H, W = sym['mask'].shape
+    V, T, on_edge, segs = bt.triangulate(polys, soft)
     s = STRING_STUDS / (sym['v_bot'] - sym['v_top'])
     gu, gv = sym['grip_u'], sym['grip_v']
     bm = bmesh.new()
     uvl = bm.loops.layers.uv.new('UVMap')
     front, back, uv = [], [], []
-    for (x, y), edge in zip(V, on_edge):
-        d = 0.0 if edge else dist[int(min(max(y, 0), H - 1)), int(min(max(x, 0), W - 1))]
-        h = 0.0035 + 0.042 * min(1.0, d / 22.0) ** 0.9
+    for x, y in V:
         X, Z = (x - gu) * s, (gv - y) * s
-        front.append(bm.verts.new((X, -h, Z)))
-        back.append(bm.verts.new((X, h, Z)))
+        front.append(bm.verts.new((X, -HALF_THICK, Z)))
+        back.append(bm.verts.new((X, HALF_THICK, Z)))
         ym = y if y >= g else 2 * gv - y           # the upper half reads the lower half's pixels, mirrored
         uv.append((x / S, 1 - (ym - g) / S))
-    def tri(vs, ids):
+    def face(vs, ids):
         try:
             f = bm.faces.new(vs)
         except ValueError:
@@ -247,17 +244,28 @@ def bow_mesh(sym, g, S):
         for loop, i in zip(f.loops, ids):
             loop[uvl].uv = uv[i]
     for a, b, c in T:
-        tri((front[a], front[b], front[c]), (a, b, c))
-        tri((back[c], back[b], back[a]), (c, b, a))
+        face((front[a], front[b], front[c]), (a, b, c))
+        face((back[c], back[b], back[a]), (c, b, a))
     for a, b in segs:
-        tri((front[a], front[b], back[b], back[a]), (a, b, b, a))
+        face((front[a], front[b], back[b], back[a]), (a, b, b, a))
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     me = bpy.data.meshes.new('Weapon_Bow')
     bm.to_mesh(me)
     bm.free()
     ob = bpy.data.objects.new('Weapon_Bow', me)
     bpy.context.scene.collection.objects.link(ob)
-    am.smooth(ob.data, SHARP_ANGLE)   # auto smooth: smooth faces, crisp edges at every ridge and blade edge
+    # the chamfer round the outline (only where the faces meet the rim at a hard angle)
+    md = ob.modifiers.new('chamfer', 'BEVEL')
+    md.width = CHAMFER
+    md.segments = 1
+    md.limit_method = 'ANGLE'
+    md.angle_limit = math.radians(60)
+    md.use_clamp_overlap = True
+    dg = bpy.context.evaluated_depsgraph_get()
+    me2 = bpy.data.meshes.new_from_object(ob.evaluated_get(dg))
+    ob.modifiers.clear()
+    ob.data = me2
+    am.smooth(ob.data, SHARP_ANGLE)   # flat faces stay flat, chamfers stay crisp
     to_plane = lambda xs, ys: [((x - gu) * s, (gv - y) * s) for x, y in zip(xs, ys)]
     return ob, to_plane
 
