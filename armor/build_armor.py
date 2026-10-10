@@ -4,7 +4,7 @@ Builds every piece procedurally, fitted to the R6 body in r6_rig_body.fbx (1 uni
 the character faces -Y). Pieces are joined into one mesh per body part, so each one welds to a
 single part in Roblox:
     Armor_Head  Armor_Torso  Armor_LeftArm  Armor_RightArm  Armor_LeftLeg  Armor_RightLeg
-    Armor_Cape  Armor_Tabard (cloth with bones, each welded to the torso)
+    Armor_Cape  Armor_Tabard  Armor_SkirtBack (cloth with bones, each welded to the torso)
 
 Surfaces are procedural Cycles materials (blackened steel, purple metal, black leather, purple
 cloth) baked down to PBR maps per mesh for Roblox SurfaceAppearance:
@@ -48,8 +48,9 @@ PARTS = {
     'RightLeg': ((-0.5, 0, 1), (1, 1, 2)),
     'Cape': ((0, 0, 3), None),     # cloth with bones: its own mesh (and texture), welded to the torso
     'Tabard': ((0, 0, 3), None),   # the front cloth panel, likewise
+    'SkirtBack': ((0, 0, 3), None),   # the back cloth panel behind the cape, likewise
 }
-BODY_PARTS = [p for p in PARTS if p not in ('Cape', 'Tabard')]
+BODY_PARTS = [p for p in PARTS if p not in ('Cape', 'Tabard', 'SkirtBack')]
 
 
 # ------------------------------------------------------------------ scene
@@ -503,7 +504,7 @@ def torso():
     sheet('Tabard', 'Cloth', 'front', (0.5, 0), -0.6, 0.6, lambda x: 0.7 + 0.5 * abs(x) / 0.6, 2.1,
           lambda x, z: 0.13 + 0.17 * (2.1 - z) + fold(x, z), th=0.03, nu=24, nv=10, bevel=0.006, name='skirt_front',
           trim=T('blr', w=0.06, th=0.025))
-    sheet('Torso', 'Cloth', 'back', (0.5, 0), -0.98, 0.98, lambda x: 0.5 + 0.4 * abs(x), 2.1,
+    sheet('SkirtBack', 'Cloth', 'back', (0.5, 0), -0.98, 0.98, lambda x: 0.5 + 0.4 * abs(x), 2.1,
           lambda x, z: 0.12 + 0.17 * (2.1 - z) + fold(x, z, 9), th=0.03, nu=24, nv=8, bevel=0.006, name='skirt_back',
           trim=T('blr', w=0.06, th=0.025))
     for face in ('right', 'left'):
@@ -1372,6 +1373,7 @@ CLOTH_RIGS = {
     # part: (bone name prefix, chain x positions, joint heights top -> tip)
     'Cape': ('Cape', (-0.75, 0.0, 0.75), (3.85, 2.95, 2.05, 1.15, 0.15)),
     'Tabard': ('Tabard', (0.0,), (2.08, 1.6, 1.15, 0.68)),
+    'SkirtBack': ('SkirtBack', (-0.5, 0.5), (2.08, 1.55, 1.05, 0.5)),
 }
 
 

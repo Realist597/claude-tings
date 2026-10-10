@@ -7,7 +7,7 @@ Satin gunmetal plate with engraved purple trim, a purple cloth skirt and cape, a
 
 | File | What it is |
 |---|---|
-| `ArmorKit.fbx` | Eight armour meshes (`Armor_Head`, `Armor_Torso`, `Armor_LeftArm`, `Armor_RightArm`, `Armor_LeftLeg`, `Armor_RightLeg`, plus `Armor_Cape` and `Armor_Tabard`, which weld to the torso and have bones), their two armatures, and six `Ref_*` parts: the R6 body they were fitted to |
+| `ArmorKit.fbx` | Nine armour meshes (`Armor_Head`, `Armor_Torso`, `Armor_LeftArm`, `Armor_RightArm`, `Armor_LeftLeg`, `Armor_RightLeg`, plus the cloth: `Armor_Cape`, `Armor_Tabard` and `Armor_SkirtBack`, which weld to the torso and have bones), their three armatures, and six `Ref_*` parts: the R6 body they were fitted to |
 | `Armor_<Part>_Color.png` | Base colour (sRGB) |
 | `Armor_<Part>_Normal.png` | Tangent-space normal map, OpenGL (+Y), which is what Roblox expects |
 | `Armor_<Part>_Roughness.png` | Roughness |
@@ -22,16 +22,26 @@ Every mesh stays under Roblox's 20,000-triangle limit, and every texture is 1024
 2. **Textures:** select each `Armor_*` MeshPart and add a **SurfaceAppearance** if the importer didn't make one.
    Set its `ColorMap`, `NormalMap`, `RoughnessMap` and `MetalnessMap` to that part's four PNGs.
 3. **Store it:** rename the model to `DarkKnightArmor` and move it into **ServerStorage**.
-4. **Scripts:** put `DarkKnightArmor.server.lua` in **ServerScriptService** as a Script, and `ArmorClothSway.client.lua` in
-   **StarterPlayer → StarterPlayerScripts** as a LocalScript. The second one moves the cape and front panel bones: the cape
-   streams back as you run and sways when standing, and the front panel flaps with the legs.
+4. **Script:** put `DarkKnightArmor.server.lua` in **ServerScriptService** as a Script.
+
+## The cloth bones
+
+The cape, the front panel and the back panel are rigged for you to animate, for example with Smart Bones:
+
+| Mesh | Root bone | Chains |
+|---|---|---|
+| `Armor_Cape` | `CapeRoot` | three chains of four, `Cape_<chain>_<0..3>`, top to bottom |
+| `Armor_Tabard` | `TabardRoot` | one chain of three, `Tabard_<0..2>` |
+| `Armor_SkirtBack` | `SkirtBackRoot` | two chains of three, `SkirtBack_<chain>_<0..2>` |
+
+Each root sits at the top of its cloth and should stay still. Every vertex has at most four bone influences, and the
+weights blend between neighbouring bones so the cloth bends smoothly.
 
 Players now spawn wearing the armour. Each piece is welded to its body part, so it moves with R6 animations.
 Hats and hair are removed so they don't poke through the helm. Turn that off with `HIDE_ACCESSORIES`
 in the script.
 
-If the armour comes in facing backwards, set `FLIP = true` in the script. If a cloth piece swings into the body instead
-of away from it, flip `CAPE_SIGN` or `TABARD_SIGN` in `ArmorClothSway.client.lua`.
+If the armour comes in facing backwards, set `FLIP = true` in the script.
 
 ## Rebuilding
 
