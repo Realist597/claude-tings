@@ -792,6 +792,9 @@ def holster():
               lambda x, z: 0.1 * clamp((2.0 - z) / 0.25), th=0.018, nu=1, nv=4, bevel=0.003, name='drop_strap')
 
 
+TWINS = {}
+
+
 def pieces():
     hat()
     collar()
@@ -801,7 +804,10 @@ def pieces():
     scarf()
     arm()
     leg()
+    n = len(A.PIECES)
+    left = [ob for p, ob in A.PIECES if p.startswith('Left')]
     A.mirror_left_to_right()
+    TWINS.update(zip(left, [ob for p, ob in A.PIECES[n:]]))   # each left piece and its mirror copy
     pauldron()
     holster()
 
@@ -1331,14 +1337,55 @@ def export(objs, refs):
     print('EXPORTED', fbx, flush=True)
 
 
-def main():
-    A.reset()
-    objs, highs = build(high=STAGE != 'stats')
+DRESS = ['LeftLeg', 'RightLeg', 'Torso', 'Cape', 'Capelet', 'Scarf', 'LeftArm', 'RightArm', 'Hat']
+
+
+def build_sequence():
+    """every detailed piece as its own object, in the order it's put on: trousers and boots, shirt and belts,
+    collar, cape, capelet, scarf, arms, and the hat last; each right-hand piece just after its left twin"""
+    materials()
+    A.PIECES.clear()
+    TWINS.clear()
+    HIGH[0] = True
+    pieces()
+    HIGH[0] = False
+    for p, ob in A.PIECES:
+        A.smooth(ob.data, 60 if ob.data.materials[0].name in SOFT else 35)
+    rank = {p: i for i, p in enumerate(DRESS)}
+    twin_of = set(TWINS.values())
+    order = []
+    for p, ob in sorted(A.PIECES, key=lambda po: rank[po[0].replace('Right', 'Left') if po[1] in twin_of else po[0]]):
+        if ob in twin_of:
+            continue
+        order.append(ob)
+        if ob in TWINS:
+            order.append(TWINS[ob])
+    return order
+
+
+def load_rig():
     A.PARTS = BODY
+    refs = A._load_rig()
+    A.PARTS = PARTS
+    return refs
+
+
+def main():
+    # the armour's timelapse and live viewer, fed this outfit's pieces
+    A.build_sequence = build_sequence
+    A._load_rig, A.load_rig = A.load_rig, load_rig
+    if STAGE == 'live':   # in Blender's own window: blender --python build_wanderer.py -- --stage live
+        A.live()
+        return
+    A.reset()
+    if STAGE == 'timelapse':
+        os.makedirs(OUT, exist_ok=True)
+        A.timelapse(os.path.join(OUT, 'build_timelapse.mp4'))
+        return
+    objs, highs = build(high=STAGE != 'stats')
     if STAGE == 'audit':
         return
-    refs = A.load_rig()
-    A.PARTS = PARTS
+    refs = load_rig()
     os.makedirs(OUT, exist_ok=True)
     for ob in list(objs.values()) + list(highs.values()):
         print(ob.name, 'tris', sum(len(p.vertices) - 2 for p in ob.data.polygons), flush=True)

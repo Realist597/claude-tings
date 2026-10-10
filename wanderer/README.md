@@ -89,6 +89,8 @@ python build_wanderer.py -- --stage preview   # quick look with live materials
 python build_wanderer.py -- --stage stats     # triangle counts per piece and per mesh
 python build_wanderer.py -- --stage inspect   # close-ups of the knees, pauldron, thigh and collar
 python build_wanderer.py -- --stage audit     # lists any detail that is buried under another piece
+python build_wanderer.py -- --stage timelapse # films it being put on, piece by piece (export/build_timelapse.mp4)
+blender --python build_wanderer.py -- --stage live   # watch it being built in Blender's own window
 python build_wanderer.py -- --stage all       # bake maps, render previews, export the FBX
 ```
 
