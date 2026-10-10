@@ -948,6 +948,19 @@ def mirror_left_to_right():
         PIECES.append((part.replace('Left', 'Right'), cp))
 
 
+def smooth(me):
+    """smooth shading, with hard edges where faces meet at more than 35 degrees"""
+    for p in me.polygons:
+        p.use_smooth = True
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    for e in bm.edges:
+        if len(e.link_faces) == 2 and e.calc_face_angle(0) > math.radians(35):
+            e.smooth = False
+    bm.to_mesh(me)
+    bm.free()
+
+
 def join_parts(prefix='Armor_'):
     dg = bpy.context.evaluated_depsgraph_get()
     out = {}
@@ -974,16 +987,7 @@ def join_parts(prefix='Armor_'):
             me.materials.append(m)
         ob = bpy.data.objects.new(prefix + part, me)
         bpy.context.scene.collection.objects.link(ob)
-        # smooth shading with hard edges past 35 degrees
-        for p in me.polygons:
-            p.use_smooth = True
-        bm = bmesh.new()
-        bm.from_mesh(me)
-        for e in bm.edges:
-            if len(e.link_faces) == 2 and e.calc_face_angle(0) > math.radians(35):
-                e.smooth = False
-        bm.to_mesh(me)
-        bm.free()
+        smooth(me)
         out[part] = ob
     for ob in [o for o in bpy.data.objects if o.name.startswith('cut')]:
         bpy.data.objects.remove(ob)
@@ -1255,6 +1259,8 @@ def timelapse(path, build_frames=200, hold_frames=72, fps=24, size=540, samples=
     HIGH[0] = False
     for ob in [o for o in bpy.data.objects if o.name.startswith('cut')]:
         ob.hide_render = True
+    for p, ob in PIECES:
+        smooth(ob.data)
     left = [ob for p, ob in PIECES if p.startswith('Left')]
     twins = dict(zip(left, [ob for p, ob in PIECES if p.startswith('Right')]))
     order = []
