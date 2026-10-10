@@ -39,6 +39,7 @@ STRING = ((800, 298), (160, 1000))   # the string's ends in the painting (px), f
 STRING_STUDS = 4.0                   # how long the string is in Roblox: sets the bow's size
 GRID = 4                             # px per mesh cell when tracing
 MAX_TRIS = 17000
+EMISSIVE_STRENGTH = 1.6              # for the previews; set SurfaceAppearance.EmissiveStrength to taste in Studio
 
 
 # ------------------------------------------------------------------ shapes
@@ -241,10 +242,28 @@ def textures(img, lum, sat, mask, box):
     nrm = np.dstack([-gx * k, gy * k, np.ones_like(h)])
     nrm /= np.linalg.norm(nrm, axis=2, keepdims=True)
     nrm = nrm * 0.5 + 0.5
+    # the purple inlays, softly: how purple each pixel is (saturated, blue above green)
+    w = np.clip((sat_ - 0.07) / 0.1, 0, 1) * np.clip(((col[..., 2] - col[..., 1]) / 255.0 - 0.02) / 0.07, 0, 1)
+    w = ndi.gaussian_filter(w, 0.7) * m
+    # a gradient along the bow: deep violet at the grip, vivid purple, light lavender at the tips...
+    (ax, ay), (bx, by) = STRING
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    t = ((xx - ax) * (bx - ax) + (yy - ay) * (by - ay)) / float((bx - ax) ** 2 + (by - ay) ** 2)
+    g = np.clip(np.abs(t - 0.5) * 2, 0, 1)
+    stops = np.array([[0.22, 0.04, 0.58], [0.52, 0.14, 1.0], [0.82, 0.38, 1.0]])
+    ramp = np.where((g < 0.5)[..., None], stops[0] + (stops[1] - stops[0]) * (g / 0.5)[..., None],
+                    stops[1] + (stops[2] - stops[1]) * ((g - 0.5) / 0.5)[..., None])
+    # ...and across each inlay: a bright core fading to its edges
+    core = np.clip(ndi.distance_transform_edt(w > 0.5) / 3.0, 0, 1)
+    shade = 0.5 + 0.5 * L                       # keep the painting's light and shade on top
+    tinted = np.clip(ramp * shade[..., None] + core[..., None] * 0.08, 0, 1)
+    col = col / 255.0 * (1 - w[..., None]) + tinted * w[..., None]
+    emissive = w * (0.5 + 0.5 * core)           # glow: where the purple is, strongest along the cores
     rough = np.clip(0.48 - 0.22 * L, 0.18, 0.6)
     rough[purple] = 0.3
     metal = np.where(purple, 0.2, 0.38)
-    maps = {'Color': sq(col / 255.0, 0.0), 'Normal': sq(nrm, 0.5), 'Roughness': sq(rough, 0.5), 'Metalness': sq(metal, 0.5)}
+    maps = {'Color': sq(col, 0.0), 'Normal': sq(nrm, 0.5), 'Roughness': sq(rough, 0.5), 'Metalness': sq(metal, 0.5),
+            'Emissive': sq(emissive, 0.0)}
     out = {}
     for ch, a in maps.items():
         a = np.clip(a, 0, 1)
@@ -360,6 +379,15 @@ def texture_material(name, paths):
     nm = nt.nodes.new('ShaderNodeNormalMap')
     nt.links.new(t['Normal'].outputs[0], nm.inputs['Color'])
     nt.links.new(nm.outputs[0], bsdf.inputs['Normal'])
+    if 'Emissive' in t:   # glow: the colour map, wherever the emissive mask says (as Roblox does it)
+        mul = nt.nodes.new('ShaderNodeMix')
+        mul.data_type = 'RGBA'
+        mul.blend_type = 'MULTIPLY'
+        mul.inputs['Factor'].default_value = 1.0
+        nt.links.new(t['Color'].outputs[0], mul.inputs[6])
+        nt.links.new(t['Emissive'].outputs[0], mul.inputs[7])
+        nt.links.new(mul.outputs[2], bsdf.inputs['Emission Color'])
+        bsdf.inputs['Emission Strength'].default_value = EMISSIVE_STRENGTH
     return m
 
 
@@ -377,7 +405,8 @@ def bow_string(img, lum, sat, bg, to_plane):
     am.PIECES.remove(('BowString', ob))
     ob.name = 'Weapon_BowString'
     flat = {'Color': np.dstack([np.full((64, 64), c) for c in colour]), 'Normal': np.dstack([np.full((64, 64), v) for v in (0.5, 0.5, 1.0)]),
-            'Roughness': np.full((64, 64, 3), 0.35), 'Metalness': np.full((64, 64, 3), 0.3)}
+            'Roughness': np.full((64, 64, 3), 0.35), 'Metalness': np.full((64, 64, 3), 0.3),
+            'Emissive': np.full((64, 64, 3), 0.8)}
     paths = {}
     for ch, a in flat.items():
         p = os.path.join(OUT, f'Weapon_BowString_{ch}.png')
