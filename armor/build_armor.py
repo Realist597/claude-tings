@@ -642,19 +642,30 @@ def leg():
     bwrap('LeftLeg', 'Steel', (cx, 0), 0.3, lambda s_: 0.94 + 0.14 * tri(s_, 0.32), G, lambda z: G(z) + 0.01, R, g0, g1,
           nu=56, nv=6, extra=lambda s_, z: 0.08 * tri(s_, 0.2) + 0.03 * max(0.0, (0.42 - z) / 0.12),
           name='greave', trim=T('tlr', w=0.05))
-    # boot: a squared leather shaft and sole, three ridged sabaton lames and a pointed toe cap
-    bwrap('LeftLeg', 'Leather', (cx, 0), 0.04, 0.38, 0.565, 0.57, R, g0, g1, nu=48, nv=3, name='boot')
-    bwrap('LeftLeg', 'Leather', (cx, -0.03), 0.0, 0.06, 0.59, 0.61, R, g0, g1, nu=48, nv=1, name='sole')
-    # the underside of the boot (stops at the inner edge so the two soles don't meet)
-    slab('LeftLeg', 'Leather', lambda u, v: (1.1 * u, -0.66 + 1.24 * v, 0.0), 8, 8, 0.03,
-         lambda p: (p[0], p[1], p[2] + 1), bevel=0.006, name='sole_bottom')
+    # boot: a real boot all the way round the foot -- a leather shaft, a toe box pushed forward and a sole
+    # under the lot -- with three ridged steel sabaton plates following its shape over the toes
+    BC = (0.54, -0.02)                # nudged out (so the two boots barely touch) and forward
+    BW, BD, BR = 0.49, 0.56, 0.16     # half-width, half-depth, corner radius
+    half = lambda hw, hd: 2 * (hw - BR) + 2 * (hd - BR) + math.pi * BR   # half the way round
+
+    def toe(s_, z):   # the toe box: pushed forward low down at the front, blending away up the instep
+        return 0.14 * min(1.0, max(0.0, (0.3 - z) / 0.16)) ** 0.7 * max(0.0, 1 - abs(s_) / 0.62) ** 0.8
+    H = half(BW, BD)
+    bwrap('LeftLeg', 'Leather', BC, 0.04, 0.37, BW, BD, BR, -H, H, nu=64, nv=6, extra=toe, name='boot')
+    S = half(BW + 0.035, BD + 0.035)
+    bwrap('LeftLeg', 'Leather', BC, -0.02, 0.05, BW + 0.035, BD + 0.035, BR, -S, S, nu=64, nv=1,
+          extra=lambda s_, z: toe(s_, 0.04), name='sole')
+
+    def sole_fill(u, v):   # the underside, filled in from the middle out to the sole's edge
+        s_ = -S + 2 * S * u
+        x, y = rr_point(s_, BW + 0.035 + toe(s_, 0.04), BD + 0.035 + toe(s_, 0.04), BR)
+        return (BC[0] + v * x, BC[1] + v * y, -0.02)
+    slab('LeftLeg', 'Leather', sole_fill, 48, 3, 0.03, lambda p: (p[0], p[1], p[2] + 1), bevel=0.006, name='sole_bottom')
     for k, (zb, zt) in enumerate(((0.24, 0.38), (0.14, 0.28), (0.05, 0.19))):
-        A = lambda z, k=k, zt=zt: 0.585 + 0.025 * k + 0.1 * (zt - z)
-        bwrap('LeftLeg', 'Steel', (cx, 0), zb, zt, A, lambda z, A=A: A(z) + 0.01, R, -0.52, 0.52, nu=18, nv=2,
-              extra=lambda s_, z: 0.045 * tri(s_, 0.3), name='sabaton', trim=T('b', w=0.03, th=0.022))
-    sheet('LeftLeg', 'Steel', 'front', (0.5, cx), -0.42, 0.42, 0.05, 0.15,
-          lambda x, z: 0.15 + 0.12 * (1 - abs(x) / 0.42) * (1 - (z - 0.05) / 0.1 * 0.6), th=0.045, nu=8, nv=2, name='toe',
-          trim=T('b', w=0.025, th=0.018))
+        lift = 0.05 + 0.012 * k
+        bwrap('LeftLeg', 'Steel', BC, zb, zt, BW + lift, BD + lift, BR, -0.78, 0.78, nu=22, nv=2,
+              extra=lambda s_, z, zt=zt: toe(s_, z) + 0.06 * (zt - z) + 0.04 * tri(s_, 0.3), name='sabaton',
+              trim=T('b', w=0.03, th=0.022))
     # a purple diamond on the outer ankle
     aw = 0.11
     sheet('LeftLeg', 'PurplePolish', 'right', (1.0, 0), -aw, aw, lambda x: 0.6 - 0.11 * (1 - abs(x) / aw),
