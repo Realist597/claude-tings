@@ -564,20 +564,21 @@ def arm():
     slab('LeftArm', 'Cloth', lambda u, v: (1.0 + u, -0.55 + 1.1 * v, 4.0 + 0.04 * math.sin(math.pi * u) * math.sin(math.pi * v)),
          8, 8, 0.03, lambda p: (p[0], p[1], p[2] - 1), bevel=0.006, name='sleeve_top')
     # pauldron: a big dome and two lames below it, each pointed at the outside, all trimmed
-    cap = dome(0.76, 3.98, 0.5)
+    cap = dome(0.66, 3.86, 0.34)
     wrap('LeftArm', 'Steel', (cx + 0.02, 0),
-         lambda d: 3.6 - 0.16 * max(0.0, math.cos(math.radians(d))) ** 2, 4.48, cap,
+         lambda d: 3.52 - 0.14 * max(0.0, math.cos(math.radians(d))) ** 2, 4.2, cap,
          lambda z: cap(z) * 0.95, -180, 180, ex=2.6, th=0.06, nu=48, nv=10, closed=True, name='pauldron', trim=T('b'),
-         extra=lambda d, z: -0.22 * max(0.0, -math.cos(math.radians(d))) ** 1.5)   # closed all round, drawn in at the neck
-    for k, (zb, rb) in enumerate(((3.3, 0.88), (3.0, 0.92), (2.72, 0.96)), 1):
+         # closed all round and drawn in at the neck, in proportion to the dome's radius so it vanishes at the top
+         extra=lambda d, z: -0.29 * cap(z) * max(0.0, -math.cos(math.radians(d))) ** 1.5)
+    for k, (zb, rb) in enumerate(((3.22, 0.76), (2.96, 0.8)), 1):
         R = lambda z, zb=zb, rb=rb: rb - 0.42 * (z - zb)
         span = 116 - 10 * k
-        wrap('LeftArm', 'Steel', (cx + 0.02 + 0.05 * k, 0),
-             lambda d, zb=zb, span=span: zb - 0.14 * max(0.0, math.cos(math.radians(d))) ** 2,
-             zb + 0.42, R, lambda z, R=R: R(z) * 0.93, -span, span, ex=2.6, th=0.055, nu=34, nv=4, name='lame', trim=T('blr'))
+        wrap('LeftArm', 'Steel', (cx + 0.02 + 0.04 * k, 0),
+             lambda d, zb=zb, span=span: zb - 0.12 * max(0.0, math.cos(math.radians(d))) ** 2,
+             zb + 0.38, R, lambda z, R=R: R(z) * 0.93, -span, span, ex=2.6, th=0.055, nu=34, nv=4, name='lame', trim=T('blr'))
     for t in (-60, -25, 25, 60):   # rivets round the dome
         x, y = se(math.radians(t), 2.6)
-        rivet('LeftArm', 'Purple', (cx + 0.02 + x * 0.82, y * 0.78, 3.78), (x, y, 0.1), 0.03)
+        rivet('LeftArm', 'Purple', (cx + 0.02 + x * 0.72, y * 0.68, 3.68), (x, y, 0.1), 0.03)
     # elbow cop on the outside: a domed disc with a purple boss and a fan
     r = 0.3
     sheet('LeftArm', 'PurplePolish', 'right', (2.0, 0), -r, r, lambda x: 2.88 - math.sqrt(max(r * r - x * x, 0)),
