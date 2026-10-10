@@ -1074,7 +1074,7 @@ def unwrap(ob):
         ob.select_set(False)
 
 
-def bake(objs, highs, res):
+def bake(objs, highs, res, cage=0.016, reach=0.04):
     """bake each High_ mesh onto its Armor_ mesh: normals, and colour / roughness / metalness through
     an emission pass, so every engraving, bead, rivet and rounded edge lands in the maps"""
     sc = bpy.context.scene
@@ -1082,8 +1082,8 @@ def bake(objs, highs, res):
     bk.margin = 12
     bk.use_clear = True
     bk.use_selected_to_active = True
-    bk.cage_extrusion = 0.016
-    bk.max_ray_distance = 0.04
+    bk.cage_extrusion = cage
+    bk.max_ray_distance = reach
     os.makedirs(OUT, exist_ok=True)
     maps = {}
     for part, ob in objs.items():

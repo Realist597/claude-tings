@@ -1409,7 +1409,7 @@ def main():
             ob.hide_render = True
         preview(os.path.join(OUT, 'preview.png'), samples=int(A.opt('--samples', '32')))
         return
-    maps = A.bake(objs, highs, RES)
+    maps = A.bake(objs, highs, RES, cage=0.03, reach=0.08)   # the folds run deeper than the armour's plates
     A.baked_materials(objs, maps)
     preview(os.path.join(OUT, 'preview.png'))
     if not A.ONLY:
