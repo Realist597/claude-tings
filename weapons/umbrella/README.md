@@ -14,7 +14,13 @@ The umbrella from Gachiakuta, modelled from the anime stills, rigged to open and
   tape, with a capped end.
 
 The fins and the spike are built with diamond and bevelled cross-sections and hard edges, so every facet catches the
-light on its own. Everything else is a clean quad grid.
+light on its own. Everything else is a lean, clean quad grid:
+
+- Rows go only where the shape bends: in the handle's crook, and at the fins' corners.
+- No piece has hidden inner walls.
+- The canopy is 3 × 6 quads per panel, starting under the hub so nothing pinches at the centre.
+
+That's about 2,200 triangles for the frame and 290 for the canopy.
 
 ## What's in `export/`
 
@@ -48,7 +54,9 @@ Nothing else is needed, and there are no constraints, so it works the same in Ro
 
 1. Import `Umbrella.fbx` with the 3D Importer. It comes in as a rigged model with bones.
 2. Give `Umbrella` and `Umbrella_Canopy` a **SurfaceAppearance** each, with their own four maps.
-3. Play the imported animation, or animate the bones yourself.
+3. Select `Umbrella_Canopy` and turn on **DoubleSided**. The cloth is a single sheet, so it needs this for its
+   underside to show.
+4. Play the imported animation, or animate the bones yourself.
 
 ## Rebuilding
 

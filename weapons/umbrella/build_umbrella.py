@@ -80,25 +80,78 @@ def rib_point(k, s, lift=0.0, across=0.0):
 
 # ------------------------------------------------------------------ the pieces
 
-def tube(part, mat, path, radius, nu=12, nv=8, th=0.0, name='tube', bevel=0.0, closed_ends=True):
-    """a round rod along path(t), t in [0, 1], radius(t)"""
+def surface(mat, fn, us, vs, closed_u=False, closed_v=False, caps=(False, False), out=None, name='surface'):
+    """a single-walled quad grid over fn(u, v), with rows and columns only at the given u and v positions (so they
+    go where the shape bends, nowhere else). closed_u / closed_v wrap it round; caps close a tube's open ends with a
+    fan; out(p) is a point it faces away from. UVs in studs: U along u, V along v"""
+    bm = bmesh.new()
+    uvl, dtl = bm.loops.layers.uv.new('UVMap'), bm.loops.layers.uv.new('Detail')
+    nu, nv = len(us) - 1, len(vs) - 1
+    cols, rows = (nu if closed_u else nu + 1), (nv if closed_v else nv + 1)
+    P = [[Vector(fn(us[i], vs[j])) for j in range(nv + 1)] for i in range(nu + 1)]
+    V = [[bm.verts.new(P[i][j]) for j in range(rows)] for i in range(cols)]
+    U = [[0.0] * (nv + 1) for _ in range(nu + 1)]
+    W = [[0.0] * (nv + 1) for _ in range(nu + 1)]
+    for j in range(nv + 1):
+        for i in range(1, nu + 1):
+            U[i][j] = U[i - 1][j] + (P[i][j] - P[i - 1][j]).length
+    for i in range(nu + 1):
+        for j in range(1, nv + 1):
+            W[i][j] = W[i][j - 1] + (P[i][j] - P[i][j - 1]).length
+    for i in range(nu):
+        for j in range(nv):
+            ids = ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1))
+            try:
+                f = bm.faces.new([V[a % cols][b % rows] for a, b in ids])
+            except ValueError:
+                continue
+            f.smooth = True
+            for loop, (a, b) in zip(f.loops, ids):
+                loop[uvl].uv = loop[dtl].uv = (U[a][b], W[a][b])
+    if closed_u and not closed_v:
+        for end, j in ((0, 0), (1, rows - 1)):
+            if not caps[end]:
+                continue
+            ring = [V[i][j] for i in range(cols)]
+            c = sum((v.co for v in ring), Vector()) / len(ring)
+            if max((v.co - c).length for v in ring) < 1e-5:
+                continue
+            cv = bm.verts.new(c)
+            for i in range(cols):
+                f = bm.faces.new((cv, ring[(i + 1) % cols], ring[i]))
+                f.smooth = True
+                for loop in f.loops:
+                    q = loop.vert.co - c
+                    loop[uvl].uv = loop[dtl].uv = (q.x + q.y, q.z)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
+    bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=1e-5)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    if out is not None:   # face away from out(p)
+        bm.normal_update()
+        score = sum(f.normal.dot(f.calc_center_median() - Vector(out(f.calc_center_median()))) for f in bm.faces)
+        if score < 0:
+            bmesh.ops.reverse_faces(bm, faces=bm.faces)
+    return A.finish('Umbrella', mat, bm, 0, name)
+
+
+def tube(part, mat, path, radius, nu=12, ts=(0.0, 1.0), caps=(False, False), closed=False, name='tube', ref=None):
+    """a round rod along path(t), radius(t), its rings only at the given t (a ring, if closed)"""
     def frame(t):
-        a = Vector(path(clamp(t - 1e-3)))
-        b = Vector(path(clamp(t + 1e-3)))
+        a = Vector(path(clamp(t - 1e-3) if not closed else t - 1e-3))
+        b = Vector(path(clamp(t + 1e-3) if not closed else t + 1e-3))
         tng = (b - a).normalized()
-        ref = Vector((0, 0, 1)) if abs(tng.z) < 0.9 else Vector((1, 0, 0))
-        x = tng.cross(ref).normalized()
+        r_ = Vector(ref) if ref else (Vector((0, 0, 1)) if abs(tng.z) < 0.9 else Vector((1, 0, 0)))
+        x = tng.cross(r_).normalized()
         return tng, x, tng.cross(x)
 
-    def fn(u, v):
-        t = v
+    def fn(u, t):
         tng, x, y = frame(t)
         a = TAU * u
         r = radius(t) if callable(radius) else radius
         return tuple(Vector(path(t)) + (x * math.cos(a) + y * math.sin(a)) * r)
-    ob = slab(part, mat, fn, nu, nv, max(th, 0.004), lambda p: tuple(axis_point(path, p)), closed_u=True, bevel=bevel,
-              name=name)
-    return ob
+    us = [i / nu for i in range(nu + 1)]
+    return surface(mat, fn, us, list(ts), closed_u=True, closed_v=closed, caps=caps,
+                   out=lambda p: axis_point(path, p), name=name)
 
 
 def axis_point(path, p, n=60):
@@ -112,19 +165,11 @@ def axis_point(path, p, n=60):
     return best
 
 
-def lathe(part, mat, zr, nu=24, name='lathe', bevel=0.006, th=0.02):
-    """a turned piece round the shaft: zr = [(z, radius), ...] bottom to top"""
-    n = len(zr) - 1
-
-    def fn(u, v):
-        x = v * n
-        j = min(int(x), n - 1)
-        f = x - j
-        z = zr[j][0] + (zr[j + 1][0] - zr[j][0]) * f
-        r = zr[j][1] + (zr[j + 1][1] - zr[j][1]) * f
-        a = TAU * u
-        return (r * math.cos(a), r * math.sin(a), z)
-    return slab(part, mat, fn, nu, n, th, lambda p: (0, 0, p[2]), closed_u=True, bevel=bevel, name=name)
+def lathe(part, mat, zr, nu=16, caps=(False, False), name='lathe'):
+    """a turned piece round the shaft: zr = [(z, radius), ...] bottom to top, one ring per entry"""
+    fn = lambda u, j: (zr[j][1] * math.cos(TAU * u), zr[j][1] * math.sin(TAU * u), zr[j][0])
+    return surface(mat, fn, [i / nu for i in range(nu + 1)], list(range(len(zr))), closed_u=True, caps=caps,
+                   out=lambda p: (0, 0, p[2]), name=name)
 
 
 def edged(mat, frame, width, thick, nu, name, inlay=None, section=None, us=None):
@@ -224,8 +269,16 @@ def rib_blade(k):
         t = FIN_T * clamp((h - b) / 0.06)
         return [(-t, b + c), (-t, h - c), (0.0, h), (t, h - c), (t, b + c), (0.0, b)]
     low = FIN_UE + 0.07
-    us = [FIN_UE * i / 8 for i in range(9)] + [FIN_UE + (low - FIN_UE) * 0.5, low] + \
-         [low + (1 - low) * i / 8 for i in range(1, 9)]
+    # rows: at its points, where its thickness and bevel stop growing, at the canopy's edge and the drop, and under
+    # each of the cloth's rows (so its foot follows the rib's curve with the cloth)
+    knots = {0.0, 1.0, FIN_UE, low, 0.07 / 0.5}
+    tip = 1 - 0.07 / ((FIN_H + FIN_D) / (1 - low) - FIN_H)
+    knots.add(tip)
+    for s_ in CANOPY_S:
+        u = (s_ - s0) / (s1 - s0)
+        if 0 < u < FIN_UE:
+            knots.add(u)
+    us = sorted(knots)
     edged('Black', frame, None, None, 0, 'blade', section=section, us=us)
     # the yellow band, both sides: below a black band along the top, its outer end cut parallel to the diagonal
     def band_lo(u):
@@ -233,15 +286,14 @@ def rib_blade(k):
 
     def band_hi(u):
         return fin_top(u) - FIN_C - 0.07 * min(1.0, u / 0.3)
+    bus = sorted({u for u in us if 0.06 <= u <= 0.98} | {0.06, 0.3, FIN_UE + 0.07 * 0.05 / 0.295, 0.98})
     for sgn in (1, -1):
-        def band(u, v, sgn=sgn):
-            uu = 0.06 + 0.92 * u
+        def band(uu, v, sgn=sgn):
             p, side_, n = frame(uu)
             lo, hi = band_lo(uu), band_hi(uu)
             y = lo + max(hi - lo, 0.0) * v
             return tuple(p + side_ * sgn * (FIN_T + 0.003) + n * y)
-        slab('Umbrella', 'Yellow', band, 22, 1, 0.005, lambda q, sgn=sgn: tuple(Vector(q) - side * sgn), bevel=0,
-             name='blade_inlay')
+        surface('Yellow', band, bus, [0.0, 1.0], out=lambda q, sgn=sgn: tuple(Vector(q) - side * sgn), name='blade_inlay')
 
 
 def frame_pieces():
@@ -260,21 +312,24 @@ def frame_pieces():
             a = (s_ - L1) / RH
             return (-RH + RH * math.cos(a), 0.0, 1.05 - L1 - RH * math.sin(a))
         return (-2 * RH, 0.0, 1.05 - L1 + (s_ - L1 - L2))
-    tube('Umbrella', 'Tape', crook, 0.075, nu=12, nv=30, name='handle')
+    L_ = 0.95 + math.pi * RH + 0.18
+    t1, t2 = 0.95 / L_, (0.95 + math.pi * RH) / L_
+    tube('Umbrella', 'Tape', crook, 0.075, nu=10, ts=[0.0, t1 / 2, t1] + [t1 + (t2 - t1) * i / 8 for i in range(1, 9)] + [1.0],
+         name='handle', ref=(0, 1, 0))   # the crook lies in the XZ plane: keep its rings square to it
     # a domed cap closing the crook's end
     zc = 1.05 - 0.95 + 0.18 - 0.03
     tube('Umbrella', 'Black', lambda t: (-2 * RH, 0.0, zc + 0.09 * math.sin(t * math.pi / 2)),
-         lambda t: 0.085 * math.cos(t * math.pi / 2) + 1e-4, nu=12, nv=5, name='handle_cap')
-    lathe('Umbrella', 'Black', [(1.0, 0.07), (1.05, 0.085), (1.12, 0.085), (1.17, 0.06)], nu=16, name='ferrule', bevel=0.004)
-    lathe('Umbrella', 'Steel', [(1.15, 0.055), (Z_HUB, 0.055)], nu=16, name='shaft', bevel=0)
+         lambda t: 0.085 * math.cos(t * math.pi / 2), nu=10, ts=[0.0, 0.35, 0.7, 1.0], name='handle_cap')
+    lathe('Umbrella', 'Black', [(1.0, 0.07), (1.05, 0.085), (1.12, 0.085), (1.17, 0.06)], nu=12, name='ferrule')
+    lathe('Umbrella', 'Steel', [(1.15, 0.055), (Z_HUB, 0.055)], nu=10, name='shaft')
     # the hub the ribs hinge on, and a collar under it
     lathe('Umbrella', 'Black', [(Z_HUB - 0.16, 0.07), (Z_HUB - 0.1, 0.16), (Z_HUB + 0.06, 0.17), (Z_HUB + 0.12, 0.12),
-                                (Z_HUB + 0.16, 0.09)], nu=24, name='hub', bevel=0.006)
+                                (Z_HUB + 0.16, 0.09)], nu=16, caps=(True, True), name='hub')
     # the top: red cord bound round the foot of a leaf-shaped spike with a yellow slot
     for j in range(3):
         zc = Z_HUB + 0.17 + j * 0.055
         tube('Umbrella', 'Cord', lambda t, zc=zc: (0.1 * math.cos(TAU * t), 0.1 * math.sin(TAU * t), zc + 0.01 * math.sin(TAU * t)),
-             0.026, nu=6, nv=16, name='cord')
+             0.026, nu=6, ts=[i / 12 for i in range(13)], closed=True, name='cord')
     z0 = Z_HUB + 0.12
 
     def spike_w(u):
@@ -283,31 +338,35 @@ def frame_pieces():
     # the spike: a forged leaf blade, ridged down both faces, with a yellow slot set through it
     spike_t = lambda u: 0.065 * clamp(spike_w(u) / 0.245) ** 0.7
     sframe = lambda u: (Vector((0, 0, z0 + 1.15 * u)), Vector((1, 0, 0)), Vector((0, 1, 0)))
-    edged('Black', sframe, spike_w, spike_t, 16, 'spike')
+    edged('Black', sframe, spike_w, spike_t, 10, 'spike')
     sw = lambda q: math.sin(math.pi * q) ** 0.6
     edged('Yellow', lambda q: sframe(0.28 + 0.4 * q), lambda q: spike_w(0.28 + 0.4 * q),
-          lambda q: spike_t(0.28 + 0.4 * q), 10, 'spike_slot', inlay=lambda q: 0.42 * spike_w(0.28 + 0.4 * q) * sw(q))
+          lambda q: spike_t(0.28 + 0.4 * q), 6, 'spike_slot', inlay=lambda q: 0.42 * spike_w(0.28 + 0.4 * q) * sw(q))
     # the runner on the shaft
     lathe('Umbrella', 'Black', [(Z_RUNNER - 0.14, 0.07), (Z_RUNNER - 0.1, 0.095), (Z_RUNNER + 0.1, 0.095),
-                                (Z_RUNNER + 0.14, 0.07)], nu=16, name='runner', bevel=0.004)
+                                (Z_RUNNER + 0.14, 0.07)], nu=12, caps=(True, True), name='runner')
     for k in range(N_RIBS):
         # the rib itself, a thin rod under the cloth, and a stretcher up to it from the runner
-        tube('Umbrella', 'Steel', lambda t, k=k: tuple(rib_point(k, t * R, -0.03)), 0.022, nu=6, nv=6, name='rib')
+        tube('Umbrella', 'Steel', lambda t, k=k: tuple(rib_point(k, t * R, -0.03)), 0.022, nu=6, ts=[0.0, 0.5, 1.0],
+             caps=(False, True), name='rib')
         top = rib_point(k, S_STRETCH, -0.03)
         bot = Vector((0, 0, Z_RUNNER)) + rib_dir(k) * 0.1
-        tube('Umbrella', 'Steel', lambda t, top=top, bot=bot: tuple(bot.lerp(top, t)), 0.018, nu=8, nv=4, name='stretcher')
+        tube('Umbrella', 'Steel', lambda t, top=top, bot=bot: tuple(bot.lerp(top, t)), 0.018, nu=6, name='stretcher')
         # the blade over the rib, and its yellow inlay (on top, and underneath where it runs past the cloth)
         rib_blade(k)
 
 
+CANOPY_S = [0.04 + (R - 0.04) * (j / 6) ** 0.9 for j in range(7)]   # its rows, out along the ribs (the first under the hub)
+
+
 def canopy_mesh():
-    """the eight cloth panels as one mesh, thick enough to read from both sides. Each panel is the straight line
-    between its two ribs at every distance out, bellied a touch upward, so when the ribs fold the cloth follows
-    them. UVs: every panel laid flat in the same square (they're printed alike)"""
-    nu, nv, th = 14, 16, 0.016
+    """the eight cloth panels as one sheet (set DoubleSided in Roblox so its underside shows). Each panel is the
+    straight line between its two ribs at every distance out, bellied a touch upward: three columns across, six
+    rows out, starting under the hub's lip so nothing pinches at the centre. When the ribs fold, the cloth between
+    them folds in. UVs: every panel laid flat in the same square (they're printed alike)"""
+    nu = 3
     half = math.pi / N_RIBS
     hw = (R_HUB + R) * math.sin(half)
-    rows = [0.0] + [((j / nv) ** 0.85) for j in range(1, nv + 1)]
     bm = bmesh.new()
     uvl = bm.loops.layers.uv.new('UVMap')
     wl = bm.verts.layers.float.new('u')      # across the panel: 0 at rib k, 1 at rib k + 1
@@ -315,47 +374,32 @@ def canopy_mesh():
     for k in range(N_RIBS):
         mid = rib_dir(k + 0.5)
         tang = Vector((0, 0, 1)).cross(mid)
-        grids = {}
-        for side, off in (('out', 0.0), ('in', -th)):
-            g = []
-            for i in range(nu + 1):
-                col = []
-                for j in range(nv + 1):
-                    u, s = i / nu, R * (0.02 + 0.98 * rows[j])
-                    a, b = rib_point(k, s), rib_point(k + 1, s)
-                    p = a.lerp(b, u) + Vector((0, 0, 0.05 * math.sin(math.pi * u) * rows[j] + off))
-                    v = bm.verts.new(p)
-                    v[wl], v[kl] = u, k
-                    col.append(v)
-                g.append(col)
-            grids[side] = g
+        g = []
+        for i in range(nu + 1):
+            col = []
+            for j, s_ in enumerate(CANOPY_S):
+                u = i / nu
+                a, b = rib_point(k, s_), rib_point(k + 1, s_)
+                v = bm.verts.new(a.lerp(b, u) + Vector((0, 0, 0.05 * math.sin(math.pi * u) * s_ / R)))
+                v[wl], v[kl] = u, k
+                col.append(v)
+            g.append(col)
 
         def uv(p):
             q = p - Vector((0, 0, Z_HUB))
             return (0.5 + q.dot(tang) / (2 * hw * 1.04), clamp(q.dot(mid) / ((R_HUB + R) * math.cos(half) * 1.02)))
-
-        def quad(vs, flip=False):
-            if flip:
-                vs = list(reversed(vs))
-            f = bm.faces.new(vs)
-            for loop in f.loops:
-                loop[uvl].uv = uv(loop.vert.co)
-        go, gi = grids['out'], grids['in']
         for i in range(nu):
-            for j in range(nv):
-                quad((go[i][j], go[i + 1][j], go[i + 1][j + 1], go[i][j + 1]))
-                quad((gi[i][j], gi[i + 1][j], gi[i + 1][j + 1], gi[i][j + 1]), flip=True)
-            quad((go[i][nv], go[i + 1][nv], gi[i + 1][nv], gi[i][nv]))           # the hem's edge
-            quad((go[i][0], go[i + 1][0], gi[i + 1][0], gi[i][0]), flip=True)    # round the hub
-        for i, j0 in ((0, None), (nu, None)):   # the panel's sides, along each rib
-            for j in range(nv):
-                quad((go[i][j], go[i][j + 1], gi[i][j + 1], gi[i][j]), flip=(i == 0))
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+            for j in range(len(CANOPY_S) - 1):
+                f = bm.faces.new((g[i][j], g[i + 1][j], g[i + 1][j + 1], g[i][j + 1]))
+                f.smooth = True
+                for loop in f.loops:
+                    loop[uvl].uv = uv(loop.vert.co)
+    bm.normal_update()
+    if sum(f.normal.z for f in bm.faces) < 0:
+        bmesh.ops.reverse_faces(bm, faces=bm.faces)
     me = bpy.data.meshes.new('Umbrella_Canopy')
     bm.to_mesh(me)
     bm.free()
-    for p in me.polygons:
-        p.use_smooth = True
     ob = bpy.data.objects.new('Umbrella_Canopy', me)
     bpy.context.scene.collection.objects.link(ob)
     return ob
