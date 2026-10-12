@@ -154,21 +154,47 @@ def rows(z0, z1, n, focus=()):
     return out
 
 
-def tube(part, mat, c, zr, a, b, t0, ex, th, nu, extra=None, bevel=0.004, name='tube'):
+def tube(part, mat, c, zr, a, b, t0, ex, th, nu, extra=None, bevel=0.004, name='tube', caps=(None, None)):
     """a closed sleeve of cloth round the vertical axis through c, its rows at the heights zr (from rows()),
-    theta starting at t0 degrees. extra(theta_deg, z) pushes it out: the folds"""
-    n = len(zr) - 1
+    theta starting at t0 degrees. extra(theta_deg, z) pushes it out: the folds. caps = (bottom, top): a radius to
+    close that end over, rolling round a rounded edge of that radius and across to the middle, so the body part
+    inside is covered like a real garment (the top of a trouser leg, the bottom of a shirt), not left open"""
     T0 = math.radians(t0)
+    desc = []
+    for end, r in ((0, caps[0]), (1, caps[1])):
+        if not r:
+            continue
+        z0 = zr[0] if end == 0 else zr[-1]
+        sign = -1 if end == 0 else 1
+        cap = [('r', z0, sign, r, math.radians(ph)) for ph in (30, 60, 90)] + [('f', z0, sign, r, f) for f in (0.5, 1.0)]
+        desc = desc + cap if end == 1 else list(reversed(cap))
+    desc = ([d for d in desc if d[2] == -1]) + [('w', z) for z in zr] + ([d for d in desc if d[2] == 1])
+    n = len(desc) - 1
+
+    def row(t, d):
+        X, Y = se(t, ex)
+        deg = math.degrees(t)
+        if d[0] == 'w':
+            z = d[1]
+            e = extra(deg, z) if extra else 0.0
+            return Vector((c[0] + X * (val(a, z) + e), c[1] + Y * (val(b, z) + e), z))
+        _, z0, sign, r, q = d
+        e = extra(deg, z0) if extra else 0.0
+        ra, rb = val(a, z0) + e, val(b, z0) + e
+        if d[0] == 'r':
+            inward, z = r * (1 - math.cos(q)), z0 + sign * r * math.sin(q)
+            return Vector((c[0] + X * (ra - inward), c[1] + Y * (rb - inward), z))
+        k = 1 - q
+        return Vector((c[0] + X * (ra - r) * k, c[1] + Y * (rb - r) * k, z0 + sign * r))
 
     def fn(u, v):
         t = T0 + TAU * u
         x = v * n
         j = min(int(x), n - 1)
-        z = zr[j] + (zr[j + 1] - zr[j]) * (x - j)
-        e = extra(math.degrees(t), z) if extra else 0.0
-        X, Y = se(t, ex)
-        return (c[0] + X * (val(a, z) + e), c[1] + Y * (val(b, z) + e), z)
-    return slab(part, mat, fn, nu, n, th, lambda p: (c[0], c[1], p[2]), closed_u=True, bevel=bevel, name=name)
+        return tuple(row(t, desc[j]).lerp(row(t, desc[j + 1]), x - j))
+    zm = (zr[0] + zr[-1]) / 2
+    inside = (lambda p: (c[0], c[1], zm)) if any(caps) else (lambda p: (c[0], c[1], p[2]))
+    return slab(part, mat, fn, nu, n, th, inside, closed_u=True, bevel=bevel, name=name)
 
 
 def flat_uvs(bm):
@@ -491,12 +517,8 @@ def shirt_and_belts():
         bunch = 0.02 * env(z, 2.4, 2.85, 0.1) * puff(z * 26 + 1.8 * math.sin(t * 3 + 0.7) + 0.6 * math.sin(t * 7))
         pull = 0.011 * env(z, 3.0, 3.85, 0.2) * side ** 2 * puff((z + 0.9 * side) * 17 + 1.0)
         return bunch + pull + fine() * 0.003 * math.sin(z * 90 + t * 13)
-    tube('Torso', 'Shirt', (0, 0), rows(1.97, 4.0, dens(14), ((2.62, 0.25, 3.5),)), 1.006, 0.506, -90, 14, 0.02, dens(40),
-         extra=shirt_folds, name='shirt')
-    slab('Torso', 'Shirt', lambda u, v: (-1.0 + 2.0 * u, -0.5 + 1.0 * v, 1.97), 8, 4, 0.02, lambda p: (p[0], p[1], p[2] + 1),
-         bevel=0, name='shirt_hem')
-    slab('Torso', 'Shirt', lambda u, v: (-1.0 + 2.0 * u, -0.5 + 1.0 * v, 4.0), 8, 4, 0.02, lambda p: (p[0], p[1], p[2] - 1),
-         bevel=0, name='shirt_top')
+    tube('Torso', 'Shirt', (0, 0), rows(2.0, 3.98, dens(14), ((2.62, 0.25, 3.5),)), 1.006, 0.506, -90, 14, 0.02, dens(40),
+         extra=shirt_folds, name='shirt', caps=(0.05, 0.04))
     # two belts: one round the waist, a second slung across it, dropping to the right hip for the pouch
     zA = lambda d: 2.12 + 0.05 * math.cos(math.radians(d))
     zB = lambda d: 1.995 + 0.13 * math.cos(math.radians(d))
@@ -717,7 +739,7 @@ def leg():
         hip = 0.012 * max(0.0, -math.sin(t)) ** 1.5 * env(z, 1.6, 1.98, 0.1) * puff(z * 28 + 2.2 * math.cos(t))
         return blouse + knee + hip + 0.01 * math.sin(t * 6 + z * 2.5) + fine() * 0.003 * math.sin(z * 80 + t * 11)
     tube('LeftLeg', 'Trousers', (cx, 0), rows(0.62, 2.0, dens(16), ((0.96, 0.14, 3.0), (1.15, 0.18, 1.5), (1.8, 0.2, 1.2))),
-         0.535, 0.545, 180, 8, 0.025, dens(36), extra=trouser_folds, name='trousers')
+         0.535, 0.545, 180, 8, 0.025, dens(36), extra=trouser_folds, name='trousers', caps=(None, 0.06))
     # a seam down the outer front, riveted
     xs = 0.15
     if HIGH[0]:
