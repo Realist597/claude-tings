@@ -312,8 +312,13 @@ def surface(part, mat, fn, us, vs, closed_u=False, closed_v=False, out=None, nam
     return A.finish(part, mat, bm, 0, name)
 
 
+LOW = [False]     # True while building the lighter game meshes the detailed gear is baked onto
+
+
 def rrect(w, h, r, n=4):
     """a rounded rectangle's outline (width w across, height h), as a loop of (x, y), r its corner radius"""
+    if LOW[0]:
+        n = max(1, n // 2)
     pts = []
     for cx, cy, a0 in ((w / 2 - r, -h / 2 + r, -90), (w / 2 - r, h / 2 - r, 0), (-w / 2 + r, h / 2 - r, 90),
                        (-w / 2 + r, -h / 2 + r, 180)):
@@ -339,6 +344,8 @@ def ring(part, mat, c, zc, radii, profile, name='ring', nu=None, dent=0.0, wave=
     the radius at each angle (radii, from girth) at height zc. Smooth all round: rounded rims, bevelled edges"""
     nr = len(radii)
     nu = nu or nr * 2
+    if LOW[0]:
+        nu = max(24, nu // 2)
     n = len(profile)
 
     def fn(u, j):
@@ -371,7 +378,8 @@ def boss(part, c, n, name='boss'):
         a = TAU * u
         r, hgt = prof[j]
         return tuple(c + (s1 * math.cos(a) + s2 * math.sin(a)) * r + n * hgt)
-    return surface(part, 'Silver', fn, [i / 48 for i in range(49)], list(range(len(prof))), closed_u=True,
+    na = 24 if LOW[0] else 48
+    return surface(part, 'Silver', fn, [i / na for i in range(na + 1)], list(range(len(prof))), closed_u=True,
                    out=lambda p: tuple(c - n * 5), name=name)
 
 
@@ -393,12 +401,15 @@ def domed_stud(part, mat, p, n, r):
     p = Vector(p)
     prof = [(0.0, 0.62), (0.35, 0.58), (0.65, 0.46), (0.85, 0.3), (0.95, 0.16), (1.0, 0.08), (1.25, 0.08), (1.3, 0.0),
             (1.3, -0.15)]
+    if LOW[0]:
+        prof = [prof[k] for k in (0, 2, 4, 5, 7, 8)]
+    na = 10 if LOW[0] else 16
 
     def fn(u, j):
         a = TAU * u
         rr, hh = prof[j]
         return tuple(p + (s1 * math.cos(a) + s2 * math.sin(a)) * rr * r + n * hh * r)
-    return surface(part, mat, fn, [i / 16 for i in range(17)], list(range(len(prof))), closed_u=True,
+    return surface(part, mat, fn, [i / na for i in range(na + 1)], list(range(len(prof))), closed_u=True,
                    out=lambda q: tuple(p - n * 5), name='stud')
 
 
@@ -459,7 +470,8 @@ def elbow_spike(part, parts, c, zc):
         hz = dz * H * e
         rr = rad(t) + dr * (0.35 + 0.65 * e) + cup(uu, hz / H) + wobble(7, u, hz * 6, 4, 0.006)
         return (c[0] + rr * math.cos(t), c[1] + rr * math.sin(t), zc + hz)
-    surface(part, 'Iron', plate, [0.5 - 0.5 * math.cos(math.pi * i / 48) for i in range(49)],
+    nq = 24 if LOW[0] else 48
+    surface(part, 'Iron', plate, [0.5 - 0.5 * math.cos(math.pi * i / nq) for i in range(nq + 1)],
             list(range(len(prof) + 1)), closed_v=True,
             out=lambda q: (c[0], c[1], q[2]), name='elbow_guard')
 
@@ -509,7 +521,8 @@ def elbow_spike(part, parts, c, zc):
         w = (1 - u) ** 0.6 * (1 + 0.25 * (1 - u) ** 6)
         a, b = sec[j % len(sec)]
         return tuple(axis(u) + up * (a * 0.22 * w) + side * (b * 0.115 * w))
-    us = [(i / 36) ** 1.15 for i in range(37)]
+    ns = 18 if LOW[0] else 36
+    us = [(i / ns) ** 1.15 for i in range(ns + 1)]
     surface(part, 'Iron', spike, us, list(range(len(sec) + 1)), closed_v=True,
             out=lambda q: tuple(axis(0.5)), name='elbow_spike')
     domed_stud(part, 'Iron', root - d * 0.02, d, 0.27)    # the collar it comes out of
@@ -564,7 +577,8 @@ def loincloth():
             fall = 0.05 + 0.07 * (top - z) / 2.4
             pleat = 0.035 * math.sin(x * 9.0 + side) * (1 - v) ** 0.7
             return (x, side * (cache[key] + fall + pleat), z)
-        A.slab('Loin', 'Cloth', fn, NU, NV, 0.03, lambda p, side=side: (p[0], 0, p[2]), bevel=0.006,
+        A.slab('LoinFront' if side < 0 else 'LoinBack', 'Cloth', fn, NU, NV, 0.03, lambda p, side=side: (p[0], 0, p[2]),
+               bevel=0.006,
                name='loin_front' if side < 0 else 'loin_back')
 
 
@@ -596,7 +610,8 @@ def hip_strips():
             ragged = 0.035 * math.sin(x * 60 + k) * (1 - tip)    # a chewed, ragged tip
             base = Vector((LEG_C[0], LEG_C[1], 0)) + dirn * (r + y + twist)
             return tuple(base + side * x + Vector((0, 0, z - 0.06 * (1 - tip) + ragged)))
-        surface('LeftLeg', 'Leather', fn, [i / 24 for i in range(25)], list(range(len(sec) + 1)), closed_v=True,
+        nl = 12 if LOW[0] else 24
+        surface('LeftLeg', 'Leather', fn, [i / nl for i in range(nl + 1)], list(range(len(sec) + 1)), closed_v=True,
                 out=lambda p: (LEG_C[0], LEG_C[1], p[2]), name='strip')
         tip_r = surf(['LeftLeg'], LEG_C, t, z0 + 0.15) + lift + 0.03
         domed_stud('LeftLeg', 'Silver', tuple(Vector((LEG_C[0], LEG_C[1], z0 + 0.16)) + dirn * tip_r), tuple(dirn), 0.06)
@@ -959,6 +974,84 @@ def head_snap(name, label):
     return path
 
 
+GEAR_PARTS = ('Torso', 'LeftArm', 'RightArm', 'LeftLeg', 'RightLeg', 'LoinFront', 'LoinBack')
+LOIN_RIGS = {   # chains across each flap, and the heights their joints hang at (top pinned under the belt)
+    'LoinFront': ((-0.55, 0.0, 0.55), (3.9, 3.15, 2.35, 1.55)),
+    'LoinBack': ((-0.7, 0.0, 0.7), (3.9, 3.2, 2.45, 1.75)),
+}
+
+
+def join_gear(prefix):
+    """the gear's pieces joined into one mesh per body part (the loincloth's two flaps apart)"""
+    dg = bpy.context.evaluated_depsgraph_get()
+    out = {}
+    for part in GEAR_PARTS:
+        obs = [ob for p, ob in A.PIECES if p == part]
+        if not obs:
+            continue
+        bm = bmesh.new()
+        mats = []
+        for ob in obs:
+            me = bpy.data.meshes.new_from_object(ob.evaluated_get(dg))
+            m = ob.data.materials[0]
+            if m not in mats:
+                mats.append(m)
+            for poly in me.polygons:
+                poly.material_index = mats.index(m)
+            bm.from_mesh(me)
+            bpy.data.meshes.remove(me)
+            bpy.data.objects.remove(ob)
+        me = bpy.data.meshes.new(prefix + part)
+        bm.to_mesh(me)
+        bm.free()
+        for m in mats:
+            me.materials.append(m)
+        ob = bpy.data.objects.new(prefix + part, me)
+        bpy.context.scene.collection.objects.link(ob)
+        A.smooth(me)
+        out[part] = ob
+    A.PIECES.clear()
+    return out
+
+
+def bake_gear():
+    """the gear built twice, in detail and lighter for the game; the detail's normals and its worn colour,
+    roughness and metalness baked onto the game meshes (Brute_Gear_<part>, maps in export/)"""
+    gear_materials()
+    LOW[0] = False
+    gear()
+    highs = join_gear('High_')
+    LOW[0] = True
+    gear()
+    lows = join_gear('Brute_Gear_')
+    LOW[0] = False
+    for part, ob in lows.items():
+        print(ob.name, 'tris', sum(len(p.vertices) - 2 for p in ob.data.polygons), '(detail',
+              sum(len(p.vertices) - 2 for p in highs[part].data.polygons), ')', flush=True)
+    for o in bpy.data.objects:      # nothing else selected, or packing the gear's UVs would pack the body's too
+        o.select_set(False)
+    maps = A.bake(lows, highs, 1024, cage=0.03, reach=0.08)
+    A.baked_materials(lows, maps)
+    for ob in highs.values():
+        bpy.data.objects.remove(ob)
+    rigs = [A.rig_cloth(lows[part], part, *LOIN_RIGS[part]) for part in LOIN_RIGS if part in lows]
+    return lows, rigs
+
+
+def export_all(body, head, gear_obs, rigs):
+    """everything in one FBX: the body parts and the head (Brute_<part>), the gear (Brute_Gear_<part>), and the
+    loincloth flaps' armatures"""
+    for o in bpy.data.objects:
+        o.select_set(False)
+    for o in [o for o, _ in body.values()] + [head] + list(gear_obs.values()) + rigs:
+        o.select_set(True)
+    bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'Brute.fbx'), use_selection=True,
+                             object_types={'MESH', 'ARMATURE'}, apply_scale_options='FBX_SCALE_ALL',
+                             mesh_smooth_type='FACE', use_tspace=True, path_mode='STRIP', add_leaf_bones=False,
+                             armature_nodetype='NULL')
+    print('EXPORTED', os.path.join(OUT, 'Brute.fbx'), flush=True)
+
+
 def export_head(head):
     for o in bpy.data.objects:
         o.select_set(o == head)
@@ -985,6 +1078,12 @@ def main():
         head_snap('step_04_head', f'the head: a plain R6 head, {tris} triangles, skinned like the body')
         return
     body_bvh(body)
+    if STAGE == 'all':
+        gear_obs, rigs = bake_gear()
+        head = plain_head()
+        export_all(body, head, gear_obs, rigs)
+        snapshot('step_11_final', [], wire=False)
+        return
     gear_materials()
     gear()
     plain_head()
