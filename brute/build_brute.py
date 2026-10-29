@@ -150,6 +150,292 @@ def skin_material(nmap):
     return m
 
 
+# ------------------------------------------------------------------ fitting gear to the body
+
+BVH = {}
+
+
+def body_bvh(body):
+    from mathutils.bvhtree import BVHTree
+    for part, (o, _) in body.items():
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        bm.transform(o.matrix_world)
+        BVH[part] = BVHTree.FromBMesh(bm)
+        bm.free()
+
+
+def surf(parts, c, theta, z):
+    """how far out the body's skin is from the vertical axis through c, looking out at angle theta (0 = +X, -90 deg
+    = front) at height z: a ray fired in from outside, so it finds the outermost skin"""
+    d = Vector((math.cos(theta), math.sin(theta), 0))
+    best = 0.0
+    for part in parts:
+        hit = BVH[part].ray_cast(Vector((c[0], c[1], z)) + d * 8, -d, 16)
+        if hit[0] is not None:
+            best = max(best, (Vector((hit[0].x - c[0], hit[0].y - c[1], 0))).length)
+    return best
+
+
+def girth(parts, c, z0, z1, nu, offset, smooth=4):
+    """a ring's radius round the axis through c at nu angles: the widest the skin gets between z0 and z1, plus
+    offset, smoothed round the ring so a rigid band doesn't follow every muscle"""
+    zs = [z0 + (z1 - z0) * k / 4 for k in range(5)]
+    r = [max(surf(parts, c, TAU * i / nu, z) for z in zs) + offset for i in range(nu)]
+    out = []
+    for i in range(nu):
+        w = [r[(i + k) % nu] for k in range(-smooth, smooth + 1)]
+        out.append(max(max(w) * 0.6 + sum(w) / len(w) * 0.4, r[i]))
+    return out
+
+
+def surface(part, mat, fn, us, vs, closed_u=False, closed_v=False, out=None, name='surface', sharp=None):
+    """a single-walled quad grid over fn(u, v) at the given u and v; closed in either direction; out(p) a point it
+    faces away from. UVs in studs. sharp(j): rows whose edges round the loop stay hard"""
+    bm = bmesh.new()
+    uvl, dtl = bm.loops.layers.uv.new('UVMap'), bm.loops.layers.uv.new('Detail')
+    nu, nv = len(us) - 1, len(vs) - 1
+    cols, rows = (nu if closed_u else nu + 1), (nv if closed_v else nv + 1)
+    P = [[Vector(fn(us[i], vs[j])) for j in range(nv + 1)] for i in range(nu + 1)]
+    V = [[bm.verts.new(P[i][j]) for j in range(rows)] for i in range(cols)]
+    U = [[0.0] * (nv + 1) for _ in range(nu + 1)]
+    W = [[0.0] * (nv + 1) for _ in range(nu + 1)]
+    for j in range(nv + 1):
+        for i in range(1, nu + 1):
+            U[i][j] = U[i - 1][j] + (P[i][j] - P[i - 1][j]).length
+    for i in range(nu + 1):
+        for j in range(1, nv + 1):
+            W[i][j] = W[i][j - 1] + (P[i][j] - P[i][j - 1]).length
+    for i in range(nu):
+        for j in range(nv):
+            ids = ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1))
+            try:
+                f = bm.faces.new([V[a % cols][b % rows] for a, b in ids])
+            except ValueError:
+                continue
+            f.smooth = True
+            for loop, (a, b) in zip(f.loops, ids):
+                loop[uvl].uv = loop[dtl].uv = (U[a][b], W[a][b])
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
+    bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=1e-5)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    if out is not None:
+        bm.normal_update()
+        score = sum(f.normal.dot(f.calc_center_median() - Vector(out(f.calc_center_median()))) * f.calc_area()
+                    for f in bm.faces)
+        if score < 0:
+            bmesh.ops.reverse_faces(bm, faces=bm.faces)
+    for f in bm.faces:
+        f.smooth = True
+    return A.finish(part, mat, bm, 0, name)
+
+
+def rrect(w, h, r, n=4):
+    """a rounded rectangle's outline (width w across, height h), as a loop of (x, y), r its corner radius"""
+    pts = []
+    for cx, cy, a0 in ((w / 2 - r, -h / 2 + r, -90), (w / 2 - r, h / 2 - r, 0), (-w / 2 + r, h / 2 - r, 90),
+                       (-w / 2 + r, -h / 2 + r, 180)):
+        for k in range(n + 1):
+            a = math.radians(a0 + 90 * k / n)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return pts
+
+
+def ring(part, mat, c, zc, radii, profile, name='ring', nu=None):
+    """a band swept round the axis through c: its cross-section the loop `profile` of (out, up) offsets, laid on
+    the radius at each angle (radii, from girth) at height zc. Smooth all round: rounded rims, bevelled edges"""
+    nr = len(radii)
+    nu = nu or nr * 2
+    n = len(profile)
+
+    def fn(u, j):
+        t = TAU * u
+        x = u * nr
+        k = int(x) % nr
+        f = x - int(x)
+        r = radii[k] * (1 - f) + radii[(k + 1) % nr] * f
+        dr, dz = profile[j % n]
+        return (c[0] + (r + dr) * math.cos(t), c[1] + (r + dr) * math.sin(t), zc + dz)
+    return surface(part, mat, fn, [i / nu for i in range(nu + 1)], list(range(n + 1)), closed_u=True, closed_v=True,
+                   out=lambda p: (c[0], c[1], p[2]), name=name)
+
+
+def boss(part, c, n, name='boss'):
+    """the belt's turned bronze boss: a domed centre, a raised ring, a stepped rim"""
+    n = Vector(n).normalized()
+    s1 = n.cross(Vector((0, 0, 1))).normalized()
+    s2 = n.cross(s1)
+    c = Vector(c)
+    prof = [(0.0, 0.17), (0.05, 0.168), (0.1, 0.16), (0.14, 0.14), (0.17, 0.115), (0.19, 0.1), (0.205, 0.115),
+            (0.225, 0.13), (0.245, 0.115), (0.26, 0.09), (0.29, 0.085), (0.33, 0.08), (0.355, 0.065), (0.37, 0.035),
+            (0.37, 0.0), (0.3, -0.01)]
+
+    def fn(u, j):
+        a = TAU * u
+        r, hgt = prof[j]
+        return tuple(c + (s1 * math.cos(a) + s2 * math.sin(a)) * r + n * hgt)
+    return surface(part, 'Bronze', fn, [i / 48 for i in range(49)], list(range(len(prof))), closed_u=True,
+                   out=lambda p: tuple(c - n * 5), name=name)
+
+
+def stud(part, mat, c, radii, z, theta_deg, r=0.06, lift=0.0):
+    nu = len(radii)
+    t = math.radians(theta_deg)
+    i = (t % TAU) / TAU * nu
+    rr = radii[int(i) % nu] + lift
+    p = (c[0] + rr * math.cos(t), c[1] + rr * math.sin(t), z)
+    domed_stud(part, mat, p, (math.cos(t), math.sin(t), 0), r)
+
+
+def domed_stud(part, mat, p, n, r):
+    """a domed rivet head on a thin washer"""
+    n = Vector(n).normalized()
+    s1 = n.cross(Vector((0, 0, 1)))
+    s1 = s1.normalized() if s1.length > 1e-6 else Vector((1, 0, 0))
+    s2 = n.cross(s1)
+    p = Vector(p)
+    prof = [(0.0, 0.62), (0.35, 0.58), (0.65, 0.46), (0.85, 0.3), (0.95, 0.16), (1.0, 0.08), (1.25, 0.08), (1.3, 0.0),
+            (1.3, -0.15)]
+
+    def fn(u, j):
+        a = TAU * u
+        rr, hh = prof[j]
+        return tuple(p + (s1 * math.cos(a) + s2 * math.sin(a)) * rr * r + n * hh * r)
+    return surface(part, mat, fn, [i / 16 for i in range(17)], list(range(len(prof))), closed_u=True,
+                   out=lambda q: tuple(p - n * 5), name='stud')
+
+
+# ------------------------------------------------------------------ the gear (an original design)
+
+ARM_C = (2.705, 0.0)      # the left arm's and leg's axes (the right are mirrored)
+LEG_C = (0.94, 0.0)
+
+
+def cuff(part, parts, c, z0, z1):
+    """an iron cuff between two rounded bronze rims, a ring of domed bronze studs round its middle"""
+    r = girth(parts, c, z0, z1, 48, 0.05)
+    H = z1 - z0
+    band = [(x + 0.035, y) for x, y in rrect(0.07, H - 0.16, 0.025)]
+    ring(part, 'Iron', c, (z0 + z1) / 2, r, band, name='cuff')
+    for zz in (z0 + 0.065, z1 - 0.065):
+        ring(part, 'Bronze', c, zz, r, [(x + 0.07, y) for x, y in rrect(0.13, 0.13, 0.05)], name='cuff_rim')
+    for k in range(12):
+        stud(part, 'Bronze', c, r, (z0 + z1) / 2, k * 30 + 15, r=0.055, lift=0.07)
+
+
+def belt():
+    nu = 64
+    c = (0.0, 0.0)
+    for z0, z1, name in ((3.6, 3.96, 'belt'), (3.93, 4.29, 'belt_upper')):
+        r = girth(['Torso'], c, z0, z1, nu, 0.03)
+        ring('Torso', 'Leather', c, (z0 + z1) / 2, r, [(x + 0.045, y) for x, y in rrect(0.09, z1 - z0, 0.03)], name=name)
+        if name == 'belt':
+            for k in range(16):
+                stud('Torso', 'Bronze', c, r, 3.78, k * 22.5 + 11.25, r=0.06, lift=0.09)
+            fy = -max(r[nu * 3 // 4 - 2: nu * 3 // 4 + 3]) - 0.09
+    boss('Torso', (0.0, fy, 3.95), (0, -1, 0))
+
+
+def loincloth():
+    """front and back flaps of heavy oxblood cloth from under the belt to the knees: pleated, torn at the hem"""
+    import random
+    for side, w, zb in ((-1, 0.82, 1.55), (1, 1.05, 1.75)):
+        rnd = random.Random(3 if side < 0 else 8)
+        NU, NV = 32, 26
+        jag = [0.0] * (NU + 1)
+        for i in range(1, NU, 2):
+            jag[i] = rnd.uniform(0.05, 0.2)
+        for i in range(2, NU, 4):
+            jag[i] = rnd.uniform(0.0, 0.06)
+
+        def y_at(x, z):
+            ys = [surf(['Torso'], (x, 0), math.pi / 2 * side, min(z, 4.2))] if z > 3.6 else []
+            for leg in ('LeftLeg', 'RightLeg'):
+                ys.append(surf([leg], (x, 0), math.pi / 2 * side, z))
+            return max(ys + [0.9])
+        top = 3.95
+        cache = {}
+
+        def fn(u, v, side=side, w=w, zb=zb, jag=jag):
+            x = (2 * u - 1) * w
+            i = u * NU
+            k = min(int(i), NU - 1)
+            jj = jag[k] + (jag[k + 1] - jag[k]) * (i - k)
+            bot = zb + 0.12 * abs(2 * u - 1) - jj
+            z = bot + (top - bot) * v
+            key = (round(x, 2), round(z, 2))
+            if key not in cache:
+                cache[key] = y_at(x, z)
+            fall = 0.05 + 0.07 * (top - z) / 2.4
+            pleat = 0.035 * math.sin(x * 9.0 + side) * (1 - v) ** 0.7
+            return (x, side * (cache[key] + fall + pleat), z)
+        A.slab('Loin', 'Cloth', fn, NU, NV, 0.03, lambda p, side=side: (p[0], 0, p[2]), bevel=0.006,
+               name='loin_front' if side < 0 else 'loin_back')
+
+
+def hip_strips():
+    """thick leather strips hanging from under the belt over each thigh's outside, rounded at their edges and
+    curving with the thigh, each tipped with a bronze cap and stud"""
+    for k, deg in enumerate((-75, -45, -15, 15, 45)):
+        t = math.radians(deg)
+        dirn = Vector((math.cos(t), math.sin(t), 0))
+        side = Vector((0, 0, 1)).cross(dirn)
+        z1, z0 = 3.95, 2.62 - 0.08 * (k % 2)
+        lift = 0.07 + 0.02 * (k % 2)
+        zs = [z0 + (z1 - z0) * q / 10 for q in range(11)]
+        rr = [surf(['LeftLeg'], LEG_C, t, z) + lift for z in zs]
+        for q in range(1, len(rr)):      # hang straight down past any dips, never into the thigh
+            rr[q] = max(rr[q], rr[q - 1] - 0.02)
+        sec = rrect(0.38, 0.05, 0.02, 3)
+
+        def fn(u, j, dirn=dirn, side=side, zs=zs, rr=rr, z0=z0, z1=z1):
+            v = u * (len(zs) - 1)
+            q = min(int(v), len(zs) - 2)
+            f = v - q
+            z = zs[q] + (zs[q + 1] - zs[q]) * f
+            r = rr[q] + (rr[q + 1] - rr[q]) * f
+            x, y = sec[j % len(sec)]
+            tip = clamp((z - z0) / 0.2)
+            x *= 0.55 + 0.45 * math.sqrt(tip)               # the strip rounds off at its tip
+            base = Vector((LEG_C[0], LEG_C[1], 0)) + dirn * (r + y)
+            return tuple(base + side * x + Vector((0, 0, z - 0.06 * (1 - tip))))
+        surface('LeftLeg', 'Leather', fn, [i / 24 for i in range(25)], list(range(len(sec) + 1)), closed_v=True,
+                out=lambda p: (LEG_C[0], LEG_C[1], p[2]), name='strip')
+        tip_r = surf(['LeftLeg'], LEG_C, t, z0 + 0.15) + lift + 0.03
+        domed_stud('LeftLeg', 'Bronze', tuple(Vector((LEG_C[0], LEG_C[1], z0 + 0.16)) + dirn * tip_r), tuple(dirn), 0.06)
+
+
+def clamp(x, a=0.0, b=1.0):
+    return min(max(x, a), b)
+
+
+def gear():
+    A.PIECES.clear()
+    cuff('LeftArm', ['LeftArm'], ARM_C, 4.12, 4.78)
+    cuff('LeftLeg', ['LeftLeg'], LEG_C, 0.55, 1.15)
+    hip_strips()
+    A.mirror_left_to_right()
+    belt()
+    loincloth()
+
+
+def gear_materials():
+    """the gear's live materials (baked down later)"""
+    def pbr(name, base, rough, metal):
+        m = bpy.data.materials.new(name)
+        m.use_nodes = True
+        b = m.node_tree.nodes['Principled BSDF']
+        b.inputs['Base Color'].default_value = lin(base)
+        b.inputs['Roughness'].default_value = rough
+        b.inputs['Metallic'].default_value = metal
+        MATS[name] = m
+    pbr('Iron', '#2d2c2e', 0.45, 1.0)
+    pbr('Bronze', '#8a5f2c', 0.32, 1.0)
+    pbr('Leather', '#2b1c14', 0.6, 0.0)
+    pbr('Cloth', '#4a1a19', 0.85, 0.0)
+    MATS['Steel'] = MATS['Bronze']
+
+
 # ------------------------------------------------------------------ step snapshots
 
 def snapshot(name, objs, wire=True, target=(0, 0, 4.2), dist=27):
@@ -157,6 +443,12 @@ def snapshot(name, objs, wire=True, target=(0, 0, 4.2), dist=27):
     materials, and (wire=True) its wireframe drawn over it"""
     sc, cam, cam_d = A.studio()
     sc.cycles.samples = 20
+    for o in sc.objects:     # the studio is set up for an R6-sized figure: move its lights out to suit this one
+        if o.type == 'LIGHT':
+            o.location = Vector(o.location) * 2.2
+            o.data.energy *= 4.0
+            o.data.size *= 2.0
+            o.rotation_euler = (Vector(target) - o.location).to_track_quat('-Z', 'Y').to_euler()
     extra = []
     if wire:
         black = bpy.data.materials.get('WireLine') or bpy.data.materials.new('WireLine')
@@ -215,6 +507,12 @@ def main():
         print(part, 'tris', sum(len(p.vertices) - 2 for p in o.data.polygons), [round(x, 2) for x in o.dimensions])
     if STAGE == 'body':
         snapshot('step_01_body', [o for o, _ in body.values()], wire=False)
+        return
+    body_bvh(body)
+    gear_materials()
+    gear()
+    if STAGE == 'gear':
+        snapshot('step_02_gear', [], wire=False)
         return
 
 
