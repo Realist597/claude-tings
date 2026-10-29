@@ -1,9 +1,12 @@
 """The Brute: an original hulking barbarian, built on the user's own muscle body (source/muscle_body.obj with its
 normal maps), for the Roblox R6 rig.
 
-Steps (each writes a viewport snapshot to export/steps/):
-    body      the body, its normal maps, and a dark grey-brown skin colour map painted from them (creases darker,
-              ridges catching the light)
+Steps (each writes a snapshot to export/steps/):
+    body      the body, its normal maps, and its skin maps painted from them: dark charcoal skin, the creases darker
+              and the ridges catching the light, battle-worn (grime, dust, bruises, cuts, scrapes, dried blood, veins)
+    head      a plain R6 head scaled to the body and skinned like it, exported as Brute_Head.fbx
+    gear      the worn gear fitted over the body: arm and leg cuffs, elbow guards with their spikes, the belt, the
+              loincloth and the hip strips
 
     python build_brute.py -- --stage body
 """
@@ -25,7 +28,7 @@ MATS = A.MATS
 # the body's parts as exported from Studio, and the normal map each uses (matched by UV layout)
 PARTS = {'Torso1': ('Torso', 'normal_torso'), 'ArmL1': ('LeftArm', 'normal_a'), 'ArmR1': ('RightArm', 'normal_a'),
          'LegL1': ('LeftLeg', 'normal_b'), 'LegR1': ('RightLeg', 'normal_b')}
-SKIN = dict(base='#403d3c', crease='#151413', ridge='#6a6563', warm='#463e3b')   # dark ashen grey
+SKIN = dict(base='#353231', crease='#121110', ridge='#5a5452', warm='#3b3431')   # dark charcoal
 
 
 # ------------------------------------------------------------------ the body
@@ -55,19 +58,27 @@ def import_body():
 def skin_maps(nmap):
     """from a part's normal map: a colour map (dark grey-brown skin, its creases deepened and its ridges lit, mottled,
     then battle-worn: grime in the creases, dust, bruises, dried blood, cuts and scrapes), a roughness map (matte
-    all over), and a detail normal map laid over the body's own. Returns the three as Blender images"""
+    all over), and a detail normal map laid over the body's own. Returns the three as Blender images.
+    nmap 'head' makes the same skin for the plain head: no muscles to follow, a 2:1 map that tiles round it"""
     from scipy import ndimage as ndi
     from PIL import Image
-    a = np.asarray(Image.open(os.path.join(SRC, nmap + '.png')).convert('RGB'), dtype=np.float64) / 255.0
+    head = nmap == 'head'
+    if head:
+        a = np.ones((512, 1024, 3)) * np.array([0.5, 0.5, 1.0])
+    else:
+        a = np.asarray(Image.open(os.path.join(SRC, nmap + '.png')).convert('RGB'), dtype=np.float64) / 255.0
+
+    def gf(x, sigma):
+        return ndi.gaussian_filter(x, sigma, mode='wrap' if head else 'reflect')
     nx, ny = a[..., 0] * 2 - 1, -(a[..., 1] * 2 - 1)       # image rows run down; OpenGL green runs up
-    curv = ndi.gaussian_filter(np.gradient(nx, axis=1) + np.gradient(ny, axis=0), 1.5)
+    curv = gf(np.gradient(nx, axis=1) + np.gradient(ny, axis=0), 1.5)
     curv /= np.percentile(np.abs(curv), 99) + 1e-6
-    broad = ndi.gaussian_filter(curv, 6)
+    broad = gf(curv, 6)
     H, W = curv.shape
     rng = np.random.default_rng(11)
-    mott = ndi.gaussian_filter(rng.standard_normal((H, W)), 9)
+    mott = gf(rng.standard_normal((H, W)), 9)
     mott /= np.abs(mott).max()
-    fine = ndi.gaussian_filter(rng.standard_normal((H, W)), 1.2)
+    fine = gf(rng.standard_normal((H, W)), 1.2)
     fine /= np.abs(fine).max()
     c = lambda h: np.array([int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)])
     col = np.ones((H, W, 3)) * c(SKIN['base'])
@@ -79,14 +90,15 @@ def skin_maps(nmap):
     col = col * (1 - 0.18 * m) + c(SKIN['warm']) * 0.18 * m
     col *= (1 + 0.04 * fine)[..., None]
     # skin texture: pores and grain, a few old scars (lighter, raised), all kept inside the UV islands
-    island = ndi.binary_erosion(np.abs(a - np.array([0.5, 0.5, 1.0])).sum(2) > 0.02, iterations=6)
-    pores = ndi.gaussian_filter(rng.standard_normal((H, W)), 0.7)
+    island = np.ones((H, W), bool) if head else \
+        ndi.binary_erosion(np.abs(a - np.array([0.5, 0.5, 1.0])).sum(2) > 0.02, iterations=6)
+    pores = gf(rng.standard_normal((H, W)), 0.7)
     pores = np.clip(-pores / (np.abs(pores).max() + 1e-6) * 3, 0, 1) ** 1.5
-    grain = ndi.gaussian_filter(rng.standard_normal((H, W)), 2.5)
+    grain = gf(rng.standard_normal((H, W)), 2.5)
     grain /= np.abs(grain).max()
     scar = np.zeros((H, W))
     ys, xs = np.nonzero(island)
-    for k in range(5 if nmap == 'normal_torso' else 3):
+    for k in range(5 if nmap == 'normal_torso' else 2 if head else 3):
         i = rng.integers(len(xs))
         x0, y0 = xs[i], ys[i]
         ang, length = rng.uniform(0, math.pi), rng.uniform(40, 110)
@@ -97,13 +109,13 @@ def skin_maps(nmap):
             if 0 <= x < W and 0 <= y < H and island[y, x]:
                 scar[y, x] = 1.0
         # a few stitch marks across the longest ones
-    scar = np.clip(ndi.gaussian_filter(scar, 1.6) * 5, 0, 1)
+    scar = np.clip(gf(scar, 1.6) * 5, 0, 1)
     col = col * (1 - 0.06 * pores[..., None])
     col = col * (1 - 0.35 * scar[..., None]) + c('#8c776f') * 0.35 * scar[..., None]
 
     # battle wear
     def blotch(sigma, cut):
-        n = ndi.gaussian_filter(rng.standard_normal((H, W)), sigma)
+        n = gf(rng.standard_normal((H, W)), sigma)
         n /= np.abs(n).max() + 1e-6
         return np.clip((n - cut) / (1 - cut), 0, 1)
 
@@ -117,7 +129,7 @@ def skin_maps(nmap):
                 x, y = int(x0 + math.cos(ang) * length * t), int(y0 + math.sin(ang) * length * t)
                 if 0 <= x < W and 0 <= y < H and island[y, x]:
                     m[y, x] = max(m[y, x], 1 - abs(t) * 1.6)
-        return np.clip(ndi.gaussian_filter(m, width) * 4, 0, 1)
+        return np.clip(gf(m, width) * 4, 0, 1)
 
     def paint(mask, colour, k):
         nonlocal col
@@ -128,7 +140,7 @@ def skin_maps(nmap):
     dust = blotch(18, 0.3)
     bruise = blotch(11, 0.5) * (0.5 + 0.5 * blotch(3, 0.0))
     spray = np.zeros((H, W))                                 # dried blood: spatters of specks round a few hits
-    for _ in range(4 if nmap == 'normal_torso' else 3):
+    for _ in range(4 if nmap == 'normal_torso' else 2 if head else 3):
         i = rng.integers(len(xs))
         cx_, cy_ = xs[i], ys[i]
         for _ in range(140):
@@ -137,11 +149,11 @@ def skin_maps(nmap):
             x, y = int(cx_ + math.cos(a_) * r_), int(cy_ + math.sin(a_) * r_)
             if 0 <= x < W and 0 <= y < H:
                 spray[y, x] = rng.uniform(0.4, 1.0)
-    blood = np.clip(ndi.gaussian_filter(spray, 0.9) * 6 + blotch(6, 0.75) * 0.8, 0, 1)
-    cuts = lines(7 if nmap == 'normal_torso' else 5, 18, 60, 0.7)
+    blood = np.clip(gf(spray, 0.9) * 6 + blotch(6, 0.75) * 0.8, 0, 1)
+    cuts = lines(7 if nmap == 'normal_torso' else 3 if head else 5, 18, 60, 0.7)
     # veins: meandering, branching, standing proud of the skin
     vein = np.zeros((H, W))
-    seeds = [None] * (16 if nmap == 'normal_torso' else 12)
+    seeds = [None] * (16 if nmap == 'normal_torso' else 0 if head else 12)
     while seeds:
         s0 = seeds.pop()
         if s0 is None:
@@ -158,7 +170,7 @@ def skin_maps(nmap):
             vein[yi, xi] = 1.0
             if rng.random() < 0.025 and len(seeds) < 40:
                 seeds.append((x, y, ang + rng.choice((-1, 1)) * rng.uniform(0.5, 1.0), int(rng.integers(20, 60))))
-    vein = np.clip(ndi.gaussian_filter(vein, 1.2) * 4, 0, 1)
+    vein = np.clip(gf(vein, 1.2) * 4, 0, 1)
     scrapes = lines(10, 10, 35, 1.6) * (0.5 + 0.5 * blotch(2, 0.0))
     paint(dust, '#7a746e', 0.2)
     paint(bruise, '#30282b', 0.25)
@@ -171,7 +183,7 @@ def skin_maps(nmap):
                     - 0.08 * scar - 0.1 * blood * island, 0.6, 0.97)
     # the detail's normals (pores and grain dimple in, scars stand proud), laid over the body's own normal map
     height = -0.6 * pores + 0.25 * grain + 1.8 * scar - 1.2 * cuts - 0.3 * scrapes + 1.6 * vein
-    gy, gx = np.gradient(ndi.gaussian_filter(height, 0.8))
+    gy, gx = np.gradient(gf(height, 0.8))
     d = np.dstack([-gx * 0.9, gy * 0.9, np.ones_like(gx)])
     d /= np.linalg.norm(d, axis=2, keepdims=True)
     base = a * 2 - 1
@@ -594,260 +606,55 @@ def clamp(x, a=0.0, b=1.0):
     return min(max(x, a), b)
 
 
-# ------------------------------------------------------------------ the hair: a wild mane, rigged for Smart Bones
+# ------------------------------------------------------------------ the head
 
 K = 1.835                       # this body is about 1.835x the R6 rig
 HEAD = Vector((0.0, 0.0, 7.33 + 0.5 * K))   # the head's centre (the R6 head, scaled to this body)
-HEAD_R = 0.6 * K + 0.02
-CHAINS = (-35, 15, 55, 90, 125, 165, 215)   # the hair's bone chains: angles round the head (90 = straight back)
 
 
-def head_dir(theta_deg, el_deg):
-    t, e = math.radians(theta_deg), math.radians(el_deg)
-    return Vector((math.cos(t) * math.cos(e), math.sin(t) * math.cos(e), math.sin(e)))
-
-
-HMAP = {}
-
-
-def head_point(theta, el, lift=0.0):
-    """the point on the sculpted head along the direction (theta, el) from its middle (looked up in a table of rays
-    cast once), lifted `lift` studs off it along its normal"""
-    import head as HD
-    if not HMAP:
-        th, els = np.arange(-270, 361, 3.0), np.arange(-30, 90.1, 3.0)
-        TH, EL = np.meshgrid(np.radians(th), np.radians(els), indexing='ij')
-        D = np.stack([np.cos(TH) * np.cos(EL), np.sin(TH) * np.cos(EL), np.sin(EL)], -1)
-        P = HD.cast(D)
-        HMAP.update(th=th, el=els, P=P, N=HD.normals(P))
-    fi = (theta - HMAP['th'][0]) / 3.0
-    fj = (min(el, 90.0) - HMAP['el'][0]) / 3.0
-    i = int(min(max(fi, 0), len(HMAP['th']) - 2))
-    j = int(min(max(fj, 0), len(HMAP['el']) - 2))
-    a, b = fi - i, fj - j
-
-    def lerp(X):
-        return (X[i, j] * (1 - a) * (1 - b) + X[i + 1, j] * a * (1 - b) + X[i, j + 1] * (1 - a) * b
-                + X[i + 1, j + 1] * a * b)
-    n = Vector(lerp(HMAP['N'])).normalized()
-    return HEAD + Vector(lerp(HMAP['P'])) * (HD.R6_R * K) + n * lift
-
-
-def spike_path(theta, el, length, sweep, rise, droop=0.35, bend=Vector()):
-    """a spike of hair from its root on the head: out along the head's normal, swung back by `sweep` (0 straight
-    out, 1 straight back) and up by `rise`, then drooping under its own weight toward the tip"""
-    root = head_point(theta, el, -0.04)
-    n = (head_point(theta, el, 1.0) - head_point(theta, el, 0.0)).normalized()
-    out = Vector((math.cos(math.radians(theta)), math.sin(math.radians(theta)), 0))
-    back = (Vector((0, 1, 0)) + out * 0.22).normalized()
-    d0 = (n * (1 - sweep) + back * sweep + Vector((0, 0, rise))).normalized()
-    pts = [root]
-    for t in (0.33, 0.66, 1.0):
-        p = root + d0 * (length * t) - Vector((0, 0, droop * length)) * t * t + bend * t * t
-        # stay clear of the back and shoulders on the way down
-        if p.z < 7.75:
-            if 15 < theta < 165:
-                p.y = max(p.y, 1.32 + 0.25 * (7.75 - p.z))
-            rad = math.hypot(p.x, p.y)
-            if rad < 1.5:
-                p.x, p.y = p.x * 1.5 / max(rad, 1e-3), p.y * 1.5 / max(rad, 1e-3)
-        pts.append(p)
-    return pts
-
-
-def catmull(pts, t):
-    n = len(pts) - 1
-    x = clamp(t) * n
-    i = min(int(x), n - 1)
-    f = x - i
-    p0, p1, p2, p3 = pts[max(i - 1, 0)], pts[i], pts[i + 1], pts[min(i + 2, n)]
-    return 0.5 * (2 * p1 + (p2 - p0) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f + (3 * p1 - p0 - 3 * p2 + p3) * f ** 3)
-
-
-def spike(pts, width, thick=0.42, rows=10, name='spike', tag=None):
-    """a spike: a flattened diamond section, broad at the root and narrowing to a sharp point, swept along its
-    path; its flat faces turned outward from the head. Its vertices remember how far along they are (for the rig)"""
-    sec = [(1, 0), (0.45, thick), (-0.45, thick), (-1, 0), (-0.45, -thick), (0.45, -thick)]
-
-    def frame(t):
-        p = catmull(pts, t)
-        tg = (catmull(pts, min(1, t + 1e-3)) - catmull(pts, max(0, t - 1e-3))).normalized()
-        radial = Vector((p.x - HEAD.x, p.y - HEAD.y, (p.z - HEAD.z) * 0.4)).normalized()
-        w = tg.cross(radial)
-        w = w.normalized() if w.length > 1e-6 else Vector((1, 0, 0))
-        return p, w, w.cross(tg).normalized()
-
-    def fn(u, j):
-        p, w, n = frame(u)
-        wd = width * (0.8 + 0.2 * math.sin(math.pi * min(u / 0.25, 1.0) / 2)) * (1 - u) ** 0.95
-        x, y = sec[j % len(sec)]
-        return tuple(p + w * x * wd + n * y * wd)
-    ob = surface('Hair', 'Hair', fn, [(i / rows) ** 0.9 for i in range(rows + 1)], list(range(len(sec) + 1)),
-                 closed_v=True, out=lambda q: tuple(HEAD), name=name)
-    ob['hair_kind'], ob['hair_theta'] = tag[0], float(tag[1])
-    return ob
-
-
-def scalp():
-    """the cap the spikes grow from: down to a hairline across the brow, over the temples, low at the nape, and
-    raised off the head for volume, most over the crown"""
-    def hairline(t):     # elevation (deg) of the hairline at angle t (front = -90)
-        f = math.cos(math.radians(t + 90))       # 1 at the front, -1 at the back
-        return 24 + 20 * max(f, 0) ** 2 - 36 * max(-f, 0)
-    nu, nv = 48, 10
-
-    def fn(u, v):
-        t = -90 + 360 * u
-        el = hairline(t) + (90 - hairline(t)) * v
-        return tuple(head_point(t, el, 0.05 + 0.2 * math.sin(math.pi * v / 2) ** 1.5))
-    ob = surface('Hair', 'Hair', fn, [i / nu for i in range(nu + 1)], [j / nv for j in range(nv + 1)], closed_u=True,
-                 out=lambda q: tuple(HEAD), name='scalp')
-    ob['hair_kind'], ob['hair_theta'] = 'scalp', 0.0
-    return ob
-
-
-def hair():
-    """a wild mane of thick jagged spikes: up and back off the crown, back and out round the sides, down over the
-    upper back, a few jagged locks over the brow and short ones at the temples"""
-    import random
-    rnd = random.Random(23)
-    scalp()
-    face = lambda th, el: el < 52 and -138 < th < -42
-    rows = (  # elevation, angles round, length, sweep back, rise, width
-        (89, range(-90, 271, 90), (1.4, 1.8), 0.95, 0.35, (0.52, 0.6)),
-        (80, range(-105, 256, 24), (1.5, 2.0), 0.92, 0.28, (0.5, 0.6)),
-        (68, range(-160, 201, 20), (1.7, 2.2), 0.88, 0.12, (0.48, 0.58)),
-        (50, range(-170, 191, 18), (1.8, 2.4), 0.85, -0.05, (0.46, 0.56)),
-        (32, range(-40, 221, 17), (1.9, 2.5), 0.8, -0.25, (0.44, 0.54)),
-        (14, range(-10, 191, 17), (1.9, 2.6), 0.75, -0.45, (0.42, 0.52)),
-        (-4, range(25, 156, 18), (1.6, 2.2), 0.7, -0.7, (0.4, 0.48)),
-    )
-    for el, ths, (l0, l1), sweep, rise, (w0, w1) in rows:
-        for th in ths:
-            th_ = th + rnd.uniform(-7, 7)
-            el_ = el + rnd.uniform(-4, 4)
-            if face(th_, el_):
-                continue
-            ln = rnd.uniform(l0, l1) * (0.7 if -160 < th_ < -20 else 1.0)
-            bend = Vector((rnd.uniform(-0.25, 0.25), rnd.uniform(-0.1, 0.2), rnd.uniform(-0.15, 0.25)))
-            pts = spike_path(th_, el_, ln, min(sweep + rnd.uniform(-0.08, 0.08), 1.0), rise + rnd.uniform(-0.12, 0.12),
-                             0.42 + rnd.uniform(-0.1, 0.1), bend)
-            spike(pts, rnd.uniform(w0, w1), tag=('clump', th_))
-    for th, ln in ((-112, 0.85), (-96, 0.7), (-80, 0.9), (-66, 0.65)):      # locks falling over the brow
-        pts = spike_path(th, 50, ln, -0.2, -0.75, 0.15, Vector((rnd.uniform(-0.1, 0.1), -0.15, 0)))
-        spike(pts, 0.3, tag=('clump', th))
-    for th in (-148, -32):                                                   # at the temples
-        pts = spike_path(th, 30, 0.75, 0.3, -0.8, 0.1)
-        spike(pts, 0.28, tag=('clump', th))
-
-
-def hair_rig(ob):
-    """bones for the mane: a root in the head and a chain of four down each of seven paths round the back and
-    sides. Every vertex blends between the two nearest chains (by the angle its clump grows from) and the two
-    nearest bones down them (by how far along its clump it is)"""
-    ad = bpy.data.armatures.new('HairRig')
-    arm = bpy.data.objects.new('HairRig', ad)
-    bpy.context.scene.collection.objects.link(arm)
-    knots = (0.0, 0.25, 0.5, 0.75, 1.0)
-    paths = {c: spike_path(c, 32, 2.2, 0.8, -0.25, 0.42) for c in CHAINS}
-    with bpy.context.temp_override(active_object=arm, object=arm, selected_objects=[arm], selected_editable_objects=[arm]):
-        bpy.context.view_layer.objects.active = arm
-        bpy.ops.object.mode_set(mode='EDIT')
-        root = ad.edit_bones.new('HairRoot')
-        root.head, root.tail = HEAD, HEAD + Vector((0, 0, 0.6))
-        for c, pts in paths.items():
-            parent = root
-            for k in range(4):
-                b = ad.edit_bones.new(f'Hair_{CHAINS.index(c)}_{k}')
-                b.head, b.tail = catmull(pts, knots[k]), catmull(pts, knots[k + 1])
-                b.parent = parent
-                b.use_connect = k > 0
-                parent = b
-        bpy.ops.object.mode_set(mode='OBJECT')
-    names = ['HairRoot'] + [f'Hair_{i}_{k}' for i in range(len(CHAINS)) for k in range(4)]
-    g = {n: ob.vertex_groups.new(name=n) for n in names}
-    tl = ob.data.attributes['hair_t'].data
-    al = ob.data.attributes['hair_theta'].data
-    for v in ob.data.vertices:
-        t, th = tl[v.index].value, al[v.index].value
-        if t < 0:
-            g['HairRoot'].add([v.index], 1.0, 'REPLACE')
-            continue
-        # the two nearest chains by angle
-        cs = sorted(range(len(CHAINS)), key=lambda i: abs(CHAINS[i] - th))[:2]
-        d0, d1 = abs(CHAINS[cs[0]] - th), abs(CHAINS[cs[1]] - th)
-        wc = {cs[0]: d1 / max(d0 + d1, 1e-6), cs[1]: d0 / max(d0 + d1, 1e-6)}
-        # down the chain: the root holds the first bit, then the bones in turn
-        pos = t * 4 - 0.5
-        w = {}
-        if pos < 0:
-            w['HairRoot'] = -pos * 2 if pos > -0.5 else 1.0
-            pos = 0
-        k = min(int(pos), 3)
-        f = pos - k
-        for c, wcc in wc.items():
-            for kk, wk in ((k, 1 - f), (min(k + 1, 3), f)):
-                n_ = f'Hair_{c}_{kk}'
-                w[n_] = w.get(n_, 0) + wcc * wk
-        best = sorted(w.items(), key=lambda kv: -kv[1])[:4]
-        tot = sum(x for _, x in best) or 1
-        for n_, x in best:
-            g[n_].add([v.index], x / tot, 'REPLACE')
-    ob.parent = arm
-    md = ob.modifiers.new('rig', 'ARMATURE')
-    md.object = arm
-    return arm
-
-
-def join_hair():
-    """the hair pieces into one mesh, each vertex tagged with how far along its clump it is and which angle the
-    clump grows from"""
-    obs = [o for p, o in A.PIECES if p == 'Hair']
+def plain_head():
+    """the head: a plain R6 head (a cylinder as tall as it is wide, its top and bottom edges rounded over by half its
+    radius), scaled to this body and skinned like it. UVs: round it across the map, from the bottom's middle up over
+    the top to the top's middle down it, so the 2:1 skin map lies on it evenly"""
+    R, rr = 0.6 * K, 0.3 * K
+    prof = [(R - rr) * k / 3 for k in range(4)]
+    prof = [(r, -R) for r in prof]
+    prof += [(R - rr + rr * math.sin(t), -R + rr - rr * math.cos(t)) for t in (math.pi / 2 * k / 6 for k in range(1, 7))]
+    prof += [(R, -R + rr + 2 * (R - rr) * k / 4) for k in range(1, 5)]
+    prof += [(R - rr + rr * math.cos(t), R - rr + rr * math.sin(t)) for t in (math.pi / 2 * k / 6 for k in range(1, 7))]
+    prof += [((R - rr) * (1 - k / 3), R) for k in range(1, 4)]
+    acc = [0.0]
+    for (r0, z0), (r1, z1) in zip(prof, prof[1:]):
+        acc.append(acc[-1] + math.hypot(r1 - r0, z1 - z0))
+    vs = [x / acc[-1] for x in acc]
+    nu = 40
     bm = bmesh.new()
-    tl = bm.verts.layers.float.new('hair_t')
-    al = bm.verts.layers.float.new('hair_theta')
-    for o in obs:
-        kind, th = o['hair_kind'], o['hair_theta']
-        first = len(bm.verts)
-        bm.from_mesh(o.data)
-        bm.verts.ensure_lookup_table()
-        new = bm.verts[first:]
-        if kind == 'scalp':
-            for v in new:
-                v[tl], v[al] = -1.0, 90.0
+    uvl = bm.loops.layers.uv.new('UVMap')
+    rings = []
+    for r, z in prof:
+        if r < 1e-6:
+            rings.append([bm.verts.new(HEAD + Vector((0, 0, z)))])
         else:
-            ends = sorted(new, key=lambda v: (v.co - HEAD).length)
-            root = ends[0].co
-            far = max((v.co - root).length for v in new) or 1
-            for v in new:
-                v[tl], v[al] = (v.co - root).length / far, float(th)
-        bpy.data.objects.remove(o)
-    me = bpy.data.meshes.new('Brute_Hair')
-    bm.to_mesh(me)
-    bm.free()
-    me.materials.append(MATS['Hair'])
-    ob = bpy.data.objects.new('Brute_Hair', me)
-    bpy.context.scene.collection.objects.link(ob)
-    A.PIECES[:] = [(p, o) for p, o in A.PIECES if p != 'Hair']
-    return ob
-
-
-def ref_head():
-    """the R6 head scaled to this body, for the snapshots (the player's own head is used in game)"""
-    before = set(bpy.data.objects)
-    bpy.ops.import_scene.fbx(filepath=A.RIG)
-    new = [o for o in bpy.data.objects if o not in before]
-    head = max(new, key=lambda o: (o.matrix_world @ Vector(o.bound_box[1])).z)
-    for o in new:
-        if o is not head:
-            bpy.data.objects.remove(o)
-    head.data.transform(head.matrix_world)
-    head.matrix_world = Matrix.Identity(4)
-    c = sum((v.co for v in head.data.vertices), Vector()) / len(head.data.vertices)
-    head.data.transform(Matrix.Translation(HEAD) @ Matrix.Scale(K, 4) @ Matrix.Translation(-c))
-    head.data.materials.clear()
-    head.data.materials.append(MATS['Skin_normal_torso'])
-    return head
+            rings.append([bm.verts.new(HEAD + Vector((r * math.cos(TAU * i / nu), r * math.sin(TAU * i / nu), z)))
+                          for i in range(nu)])
+    for j in range(len(rings) - 1):
+        lo, hi = rings[j], rings[j + 1]
+        for i in range(nu):
+            if len(lo) == 1:
+                vv = [(lo[0], ((i + 0.5) / nu, vs[j])), (hi[(i + 1) % nu], ((i + 1) / nu, vs[j + 1])),
+                      (hi[i], (i / nu, vs[j + 1]))]
+            elif len(hi) == 1:
+                vv = [(lo[i], (i / nu, vs[j])), (lo[(i + 1) % nu], ((i + 1) / nu, vs[j])),
+                      (hi[0], ((i + 0.5) / nu, vs[j + 1]))]
+            else:
+                vv = [(lo[i], (i / nu, vs[j])), (lo[(i + 1) % nu], ((i + 1) / nu, vs[j])),
+                      (hi[(i + 1) % nu], ((i + 1) / nu, vs[j + 1])), (hi[i], (i / nu, vs[j + 1]))]
+            f = bm.faces.new([v for v, _ in vv])
+            f.smooth = True
+            for loop, (_, uv) in zip(f.loops, vv):
+                loop[uvl].uv = uv
+    skin_material('head')
+    return A.finish('Head', 'Skin_head', bm, 0, 'Brute_Head')
 
 
 def gear():
@@ -861,156 +668,11 @@ def gear():
     loincloth()
 
 
-def head_assets():
-    """the head, three ways: the full sculpt (Brute_Head_High, painted), the game mesh cast from its forms on a
-    leaner grid (Brute_Head), and the glowing eyes (Brute_Eyes). The sculpt's detail, colour and roughness are
-    baked onto the game mesh"""
-    import head as HD
-    Gh = HD.grid(400, 300)
-    hi = HD.build(Gh, K, tuple(HEAD), 'Brute_Head_High')
-    col, rough = HD.paint(Gh, SKIN)
-    c = np.concatenate([col.reshape(-1, 3), [col[:, 0].mean(0), col[:, -1].mean(0)]])
-    r = np.concatenate([rough.reshape(-1), [rough[:, 0].mean(), rough[:, -1].mean()]])
-    me = hi.data
-    ca = me.color_attributes.new('Col', 'FLOAT_COLOR', 'POINT')
-    ca.data.foreach_set('color', np.concatenate([c, np.ones((len(c), 1))], 1).astype(np.float32).ravel())
-    ra = me.attributes.new('Rough', 'FLOAT', 'POINT')
-    ra.data.foreach_set('value', r.astype(np.float32))
-    lo = HD.build(HD.low_grid(), K, tuple(HEAD), 'Brute_Head', upto=len(HD.FORMS))
-    eyes = HD.eyes(K, tuple(HEAD))
-    eyes.data.materials.append(glow_material())
-    print('head tris: sculpt', sum(len(p.vertices) - 2 for p in me.polygons), 'game',
-          sum(len(p.vertices) - 2 for p in lo.data.polygons), 'eyes', sum(len(p.vertices) - 2 for p in eyes.data.polygons),
-          flush=True)
-    maps = bake_head(lo, hi)
-    m = bpy.data.materials.new('Brute_Head')
-    m.use_nodes = True
-    nt = m.node_tree
-    b = nt.nodes['Principled BSDF']
-    tex = {}
-    for ch, img in maps.items():
-        t = nt.nodes.new('ShaderNodeTexImage')
-        t.image = img
-        tex[ch] = t
-    nt.links.new(tex['Color'].outputs[0], b.inputs['Base Color'])
-    nt.links.new(tex['Roughness'].outputs[0], b.inputs['Roughness'])
-    nm = nt.nodes.new('ShaderNodeNormalMap')
-    nt.links.new(tex['Normal'].outputs[0], nm.inputs['Color'])
-    nt.links.new(nm.outputs[0], b.inputs['Normal'])
-    b.inputs['Specular IOR Level'].default_value = 0.3
-    lo.data.materials.clear()
-    lo.data.materials.append(m)
-    hi.hide_render = True
-    return lo, eyes, hi
-
-
-def game_head():
-    """the game head and eyes with the maps already baked (head_assets() bakes them if they aren't there yet)"""
-    import head as HD
-    paths = {ch: os.path.join(OUT, 'Brute_Head_' + ch + '.png') for ch in ('Color', 'Roughness', 'Normal')}
-    if not all(os.path.exists(f) for f in paths.values()):
-        lo, eyes, hi = head_assets()
-        bpy.data.objects.remove(hi)
-        return lo, eyes
-    lo = HD.build(HD.low_grid(), K, tuple(HEAD), 'Brute_Head', upto=len(HD.FORMS))
-    eyes = HD.eyes(K, tuple(HEAD))
-    eyes.data.materials.append(glow_material())
-    m = bpy.data.materials.new('Brute_Head')
-    m.use_nodes = True
-    nt = m.node_tree
-    b = nt.nodes['Principled BSDF']
-    tex = {}
-    for ch, f in paths.items():
-        t = nt.nodes.new('ShaderNodeTexImage')
-        t.image = bpy.data.images.load(f)
-        if ch != 'Color':
-            t.image.colorspace_settings.name = 'Non-Color'
-        tex[ch] = t
-    nt.links.new(tex['Color'].outputs[0], b.inputs['Base Color'])
-    nt.links.new(tex['Roughness'].outputs[0], b.inputs['Roughness'])
-    nm = nt.nodes.new('ShaderNodeNormalMap')
-    nt.links.new(tex['Normal'].outputs[0], nm.inputs['Color'])
-    nt.links.new(nm.outputs[0], b.inputs['Normal'])
-    b.inputs['Specular IOR Level'].default_value = 0.3
-    lo.data.materials.append(m)
-    return lo, eyes
-
-
-def bake_head(lo, hi, res=1024):
-    """the sculpt onto the game mesh: its normals, and its painted colour and roughness through an emission pass"""
-    sc = bpy.context.scene
-    sc.render.engine = 'CYCLES'
-    bk = sc.render.bake
-    bk.margin = 8
-    bk.use_clear = True
-    bk.use_selected_to_active = True
-    bk.cage_extrusion = 0.06
-    bk.max_ray_distance = 0.16
-    pm = bpy.data.materials.new('HeadPaint')
-    pm.use_nodes = True
-    nt = pm.node_tree
-    nt.nodes.clear()
-    out = nt.nodes.new('ShaderNodeOutputMaterial')
-    em = nt.nodes.new('ShaderNodeEmission')
-    nt.links.new(em.outputs[0], out.inputs['Surface'])
-    src = {}
-    for ch, attr, sock in (('Color', 'Col', 'Color'), ('Roughness', 'Rough', 'Fac')):
-        at = nt.nodes.new('ShaderNodeAttribute')
-        at.attribute_name = attr
-        src[ch] = at.outputs[sock]
-    hi.data.materials.clear()
-    hi.data.materials.append(pm)
-    tm = bpy.data.materials.new('HeadTarget')
-    tm.use_nodes = True
-    tnode = tm.node_tree.nodes.new('ShaderNodeTexImage')
-    tm.node_tree.nodes.active = tnode
-    lo.data.materials.clear()
-    lo.data.materials.append(tm)
-    for o in bpy.data.objects:
-        o.select_set(False)
-    hi.select_set(True)
-    lo.select_set(True)
-    bpy.context.view_layer.objects.active = lo
-    maps = {}
-    os.makedirs(OUT, exist_ok=True)
-    for ch in ('Color', 'Roughness', 'Normal'):
-        img = bpy.data.images.new('Brute_Head_' + ch, res, res, alpha=False)
-        img.colorspace_settings.name = 'sRGB' if ch == 'Color' else 'Non-Color'
-        tnode.image = img
-        if ch == 'Normal':
-            sc.cycles.samples = 8
-            bpy.ops.object.bake(type='NORMAL', normal_space='TANGENT', margin=8, use_selected_to_active=True)
-        else:
-            nt.links.new(src[ch], em.inputs['Color'])
-            sc.cycles.samples = 4
-            bpy.ops.object.bake(type='EMIT', margin=8, use_selected_to_active=True)
-        img.filepath_raw = os.path.join(OUT, 'Brute_Head_' + ch + '.png')
-        img.file_format = 'PNG'
-        img.save()
-        maps[ch] = img
-        print('BAKED', img.name, flush=True)
-    hi.select_set(False)
-    lo.select_set(False)
-    return maps
-
-
-def glow_material():
-    """the eyes: a flat glowing red (Neon in Studio)"""
-    m = bpy.data.materials.new('Glow')
-    m.use_nodes = True
-    b = m.node_tree.nodes['Principled BSDF']
-    b.inputs['Base Color'].default_value = (1.0, 0.05, 0.02, 1)
-    b.inputs['Emission Color'].default_value = (1.0, 0.04, 0.01, 1)
-    b.inputs['Emission Strength'].default_value = 6.0
-    return m
-
-
 def gear_materials():
     """worn, battle-used materials: pitted, rusting, scratched and grimy iron, silver tarnished black in its grooves
     and rubbed bright on its edges,
     scuffed and cracked leather, stained cloth. Each exposes OUT_COL / OUT_ROUGH / OUT_METAL for baking"""
-    for name, kind in (('Iron', 'iron'), ('Silver', 'silver'), ('Leather', 'leather'), ('Cloth', 'cloth'),
-                       ('Hair', 'hair')):
+    for name, kind in (('Iron', 'iron'), ('Silver', 'silver'), ('Leather', 'leather'), ('Cloth', 'cloth')):
         worn_material(name, kind)
     MATS['Steel'] = MATS['Silver']
 
@@ -1154,7 +816,7 @@ def worn_material(name, kind):
         rough = op('ADD', 0.7, op('ADD', op('MULTIPLY', blot, 0.15), op('MULTIPLY', edge, -0.08)))
         metal = 0.0
         height = op('ADD', op('MULTIPLY', grain, 0.4), op('MULTIPLY', cracks, -0.8))
-    elif kind == 'cloth':
+    else:   # cloth
         low = N.new('ShaderNodeSeparateXYZ')
         L.new(geo.outputs['Position'], low.inputs[0])
         grime = op('MAXIMUM', rng(low.outputs['Z'], 2.6, 1.5), op('MULTIPLY', crev, 0.6))
@@ -1169,22 +831,6 @@ def worn_material(name, kind):
         rough = op('ADD', 0.82, op('MULTIPLY', grime, 0.1))
         metal = 0.0
         height = op('ADD', op('MULTIPLY', weave.outputs['Fac'], 0.5), op('MULTIPLY', noise(8, 6), 0.4))
-    else:   # hair: near-black, with a sheen running along the strands
-        sep = N.new('ShaderNodeUVMap')
-        sep.uv_map = 'Detail'
-        sx = N.new('ShaderNodeSeparateXYZ')
-        L.new(sep.outputs['UV'], sx.inputs[0])
-        strands = N.new('ShaderNodeTexWave')
-        strands.inputs['Scale'].default_value = 1.0
-        mp = N.new('ShaderNodeCombineXYZ')
-        L.new(op('MULTIPLY', sx.outputs['Y'], 60.0), mp.inputs[0])
-        L.new(mp.outputs[0], strands.inputs['Vector'])
-        col = mix(op('MULTIPLY', strands.outputs['Fac'], 0.4), lin('#0f0c0b'), lin('#262019'))
-        col = mix(op('MULTIPLY', crev, 0.7), col, lin('#050403'))
-        col = mix(op('MULTIPLY', grime, 0.35), col, lin('#2a2420'))                # dust and grime matted in
-        rough = op('ADD', 0.66, op('MULTIPLY', strands.outputs['Fac'], 0.14))
-        metal = 0.0
-        height = strands.outputs['Fac']
     bump = N.new('ShaderNodeBump')
     bump.inputs['Strength'].default_value = 0.35
     bump.inputs['Distance'].default_value = 0.004
@@ -1273,12 +919,8 @@ def snapshot(name, objs, wire=True, target=(0, 0, 4.2), dist=27):
     print('STEP', out.filepath_raw, flush=True)
 
 
-HEAD_DIR = None
-
-
 def head_snap(name, label):
-    """one layer of the sculpt: the head from the front and three-quarter, side by side, its name along the top"""
-    global HEAD_DIR
+    """the head close up, from the front and three-quarter, side by side, a label along the top"""
     sc = bpy.context.scene
     if not sc.camera:
         sc, cam, cam_d = A.studio()
@@ -1291,14 +933,13 @@ def head_snap(name, label):
     sc.cycles.samples = 16
     sc.render.resolution_x = sc.render.resolution_y = 560
     cam.data.lens = 85
-    HEAD_DIR = os.path.join(STEPS, 'head')
-    os.makedirs(HEAD_DIR, exist_ok=True)
+    os.makedirs(STEPS, exist_ok=True)
     shots = []
     for i, az in enumerate((0, -35)):
         a = math.radians(az - 90)
         cam.location = HEAD + Vector((math.cos(a), math.sin(a), 0.06)) * 9.0
         cam.rotation_euler = (HEAD - cam.location).to_track_quat('-Z', 'Y').to_euler()
-        f = os.path.join(HEAD_DIR, f'_{i}.png')
+        f = os.path.join(STEPS, f'_h{i}.png')
         sc.render.filepath = f
         bpy.ops.render.render(write_still=True)
         shots.append(f)
@@ -1310,37 +951,21 @@ def head_snap(name, label):
         out.paste(im, (k * W, 44))
     font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 20)
     ImageDraw.Draw(out).text((14, 11), label, fill=(235, 235, 235), font=font)
-    path = os.path.join(HEAD_DIR, name + '.png')
+    path = os.path.join(STEPS, name + '.png')
     out.save(path)
     for f in shots:
         os.remove(f)
+    print('STEP', path, flush=True)
     return path
 
 
-def contact(frames, name):
-    """every layer of the sculpt on one sheet, and as a short video"""
-    import subprocess
-    from PIL import Image
-    ims = [Image.open(f) for f in frames]
-    W, H = ims[0].size
-    cols = 3
-    rows = (len(ims) + cols - 1) // cols
-    sheet = Image.new('RGB', (W * cols // 2, H * rows // 2), (34, 34, 38))
-    for k, im in enumerate(ims):
-        sheet.paste(im.resize((W // 2, H // 2)), ((k % cols) * W // 2, (k // cols) * H // 2))
-    sheet.save(os.path.join(STEPS, name + '.png'))
-    seq = os.path.join(HEAD_DIR, 'seq')
-    os.makedirs(seq, exist_ok=True)
-    n = 0
-    for f in frames:
-        for _ in range(18):            # hold each layer for 0.75 s
-            Image.open(f).save(os.path.join(seq, f'{n:04d}.png'))
-            n += 1
-    subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-framerate', '24', '-i', os.path.join(seq, '%04d.png'),
-                    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '20', os.path.join(STEPS, name + '.mp4')], check=True)
-    import shutil
-    shutil.rmtree(seq)
-    print('STEP', os.path.join(STEPS, name + '.png'), flush=True)
+def export_head(head):
+    for o in bpy.data.objects:
+        o.select_set(o == head)
+    bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'Brute_Head.fbx'), use_selection=True, object_types={'MESH'},
+                             apply_scale_options='FBX_SCALE_ALL', mesh_smooth_type='FACE', use_tspace=True,
+                             path_mode='STRIP')
+    print('EXPORTED', os.path.join(OUT, 'Brute_Head.fbx'), flush=True)
 
 
 def main():
@@ -1354,76 +979,17 @@ def main():
         snapshot('step_01_body', [o for o, _ in body.values()], wire=False)
         return
     if STAGE == 'head':
-        import head as HD
-        G = HD.grid(320, 240)
-        hi = HD.build(G, K, tuple(HEAD), 'Brute_Head_High', upto=1)
-        clay = bpy.data.materials.new('Clay')
-        clay.use_nodes = True
-        cb = clay.node_tree.nodes['Principled BSDF']
-        cb.inputs['Base Color'].default_value = (0.42, 0.4, 0.39, 1)
-        cb.inputs['Roughness'].default_value = 0.6
-        hi.data.materials.append(clay)
-        eyes = HD.eyes(K, tuple(HEAD))
-        eyes.data.materials.append(glow_material())
-        eye_step = 1 + next(i for i, (name, _) in enumerate(HD.FORMS) if name.startswith('the eyes'))
-        for o, _ in body.values():
-            o.hide_render = True
-        frames = []
-        for k in range(1, HD.STEPS + 1):
-            HD.update(hi, G, K, tuple(HEAD), upto=k)
-            eyes.hide_render = k < eye_step
-            frames.append(head_snap(f'head_{k:02d}', HD.step_name(k)))
-            print('STEP', k, HD.step_name(k), flush=True)
-        contact(frames, 'step_04_head')
-        print('tris', sum(len(p.vertices) - 2 for p in hi.data.polygons), flush=True)
-        return
-    if STAGE == 'headbake':
-        lo, eyes, hi = head_assets()
-        for o, _ in body.values():
-            o.hide_render = True
-        f1 = head_snap('baked', 'the game head: ' + str(sum(len(p.vertices) - 2 for p in lo.data.polygons))
-                       + ' triangles, the sculpt baked onto it, the eyes glowing')
-        w = lo.copy()
-        w.data = lo.data.copy()
-        bpy.context.scene.collection.objects.link(w)
-        md = w.modifiers.new('w', 'WIREFRAME')
-        md.thickness = 0.006
-        md.use_replace = True
-        black = bpy.data.materials.new('Wire')
-        black.diffuse_color = (0.02, 0.02, 0.02, 1)
-        w.data.materials.clear()
-        w.data.materials.append(black)
-        f2 = head_snap('wire', 'its topology')
-        from PIL import Image
-        ims = [Image.open(f) for f in (f1, f2)]
-        sheet = Image.new('RGB', (ims[0].width, ims[0].height * 2))
-        for k, im in enumerate(ims):
-            sheet.paste(im, (0, ims[0].height * k))
-        sheet.save(os.path.join(STEPS, 'step_06_head_game.png'))
-        for f in (f1, f2):
-            os.remove(f)
-        print('STEP', os.path.join(STEPS, 'step_06_head_game.png'), flush=True)
-        bpy.data.objects.remove(w)
-        for o in bpy.data.objects:
-            o.select_set(o in (lo, eyes))
-        bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'Brute_Head.fbx'), use_selection=True,
-                                 object_types={'MESH'}, apply_scale_options='FBX_SCALE_ALL', mesh_smooth_type='FACE',
-                                 use_tspace=True, path_mode='STRIP')
-        print('EXPORTED', os.path.join(OUT, 'Brute_Head.fbx'), flush=True)
+        head = plain_head()
+        tris = sum(len(p.vertices) - 2 for p in head.data.polygons)
+        export_head(head)
+        head_snap('step_04_head', f'the head: a plain R6 head, {tris} triangles, skinned like the body')
         return
     body_bvh(body)
     gear_materials()
     gear()
+    plain_head()
     if STAGE == 'gear':
         snapshot('step_02_gear', [], wire=False)
-        return
-    hair()
-    hob = join_hair()
-    rig = hair_rig(hob)
-    head, eyes = game_head()
-    print('hair tris', sum(len(p.vertices) - 2 for p in hob.data.polygons), 'bones', len(rig.data.bones))
-    if STAGE == 'hair':
-        snapshot('step_03_hair', [hob], wire=False, target=(0, 0.3, 5.0), dist=31)
         return
 
 
