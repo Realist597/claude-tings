@@ -586,10 +586,36 @@ def head_dir(theta_deg, el_deg):
     return Vector((math.cos(t) * math.cos(e), math.sin(t) * math.cos(e), math.sin(e)))
 
 
+HMAP = {}
+
+
+def head_point(theta, el, lift=0.0):
+    """the point on the sculpted head along the direction (theta, el) from its middle (looked up in a table of rays
+    cast once), lifted `lift` studs off it along its normal"""
+    import head as HD
+    if not HMAP:
+        th, els = np.arange(-270, 361, 3.0), np.arange(-30, 90.1, 3.0)
+        TH, EL = np.meshgrid(np.radians(th), np.radians(els), indexing='ij')
+        D = np.stack([np.cos(TH) * np.cos(EL), np.sin(TH) * np.cos(EL), np.sin(EL)], -1)
+        P = HD.cast(D)
+        HMAP.update(th=th, el=els, P=P, N=HD.normals(P))
+    fi = (theta - HMAP['th'][0]) / 3.0
+    fj = (min(el, 90.0) - HMAP['el'][0]) / 3.0
+    i = int(min(max(fi, 0), len(HMAP['th']) - 2))
+    j = int(min(max(fj, 0), len(HMAP['el']) - 2))
+    a, b = fi - i, fj - j
+
+    def lerp(X):
+        return (X[i, j] * (1 - a) * (1 - b) + X[i + 1, j] * a * (1 - b) + X[i, j + 1] * (1 - a) * b
+                + X[i + 1, j + 1] * a * b)
+    n = Vector(lerp(HMAP['N'])).normalized()
+    return HEAD + Vector(lerp(HMAP['P'])) * (HD.R6_R * K) + n * lift
+
+
 def clump_path(theta, el, length, flare, seed_off=Vector()):
     """a clump of hair from its root on the scalp: out and up a little for volume, then swept back and down, its tip
     kicking outward"""
-    root = HEAD + head_dir(theta, el) * HEAD_R * Vector((1, 1, 0.95))
+    root = head_point(theta, el, 0.02)
     out = Vector((math.cos(math.radians(theta)), math.sin(math.radians(theta)), 0))
     backish = (Vector((0, 1, 0)) * 0.75 + out * 0.6).normalized()
     up = Vector((0, 0, 1))
@@ -651,7 +677,7 @@ def scalp():
     def fn(u, v):
         t = -90 + 360 * u
         el = hairline(t) + (90 - hairline(t)) * v
-        return tuple(HEAD + head_dir(t, el) * (HEAD_R + 0.05) * Vector((1, 1, 0.95)))
+        return tuple(head_point(t, el, 0.05))
     ob = surface('Hair', 'Hair', fn, [i / nu for i in range(nu + 1)], [j / nv for j in range(nv + 1)], closed_u=True,
                  out=lambda q: tuple(HEAD), name='scalp')
     ob['hair_kind'], ob['hair_theta'] = 'scalp', 0.0
@@ -671,7 +697,7 @@ def hair():
             length = ln * rnd.uniform(0.75, 1.25) * (0.55 if -150 < th_ < -30 else 1.0)
             pts = clump_path(th_, el + rnd.uniform(-5, 5), length, rnd.uniform(0.0, 0.35),
                              Vector((rnd.uniform(-0.15, 0.15), rnd.uniform(-0.1, 0.2), rnd.uniform(-0.15, 0.15))))
-            hair_clump(pts, rnd.uniform(0.28, 0.4), tag=('clump', th_))
+            hair_clump(pts, rnd.uniform(0.32, 0.46), tag=('clump', th_))
     # strands framing the face, either side
     for th in (-128, -52):
         pts = clump_path(th, 30, 0.7, 0.1)
@@ -1116,9 +1142,10 @@ def worn_material(name, kind):
         mp = N.new('ShaderNodeCombineXYZ')
         L.new(op('MULTIPLY', sx.outputs['Y'], 60.0), mp.inputs[0])
         L.new(mp.outputs[0], strands.inputs['Vector'])
-        col = mix(op('MULTIPLY', strands.outputs['Fac'], 0.35), lin('#120d0b'), lin('#2b211c'))
-        col = mix(op('MULTIPLY', crev, 0.7), col, lin('#060403'))
-        rough = op('ADD', 0.42, op('MULTIPLY', strands.outputs['Fac'], 0.15))
+        col = mix(op('MULTIPLY', strands.outputs['Fac'], 0.4), lin('#0f0c0b'), lin('#262019'))
+        col = mix(op('MULTIPLY', crev, 0.7), col, lin('#050403'))
+        col = mix(op('MULTIPLY', grime, 0.35), col, lin('#2a2420'))                # dust and grime matted in
+        rough = op('ADD', 0.66, op('MULTIPLY', strands.outputs['Fac'], 0.14))
         metal = 0.0
         height = strands.outputs['Fac']
     bump = N.new('ShaderNodeBump')
@@ -1356,7 +1383,7 @@ def main():
     hair()
     hob = join_hair()
     rig = hair_rig(hob)
-    head = ref_head()
+    head, eyes = game_head()
     print('hair tris', sum(len(p.vertices) - 2 for p in hob.data.polygons), 'bones', len(rig.data.bones))
     if STAGE == 'hair':
         snapshot('step_03_hair', [hob], wire=False, target=(0, 0.3, 5.0), dist=31)
