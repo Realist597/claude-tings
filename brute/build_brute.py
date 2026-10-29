@@ -28,7 +28,7 @@ MATS = A.MATS
 # the body's parts as exported from Studio, and the normal map each uses (matched by UV layout)
 PARTS = {'Torso1': ('Torso', 'normal_torso'), 'ArmL1': ('LeftArm', 'normal_a'), 'ArmR1': ('RightArm', 'normal_a'),
          'LegL1': ('LeftLeg', 'normal_b'), 'LegR1': ('RightLeg', 'normal_b')}
-SKIN = dict(base='#353231', crease='#121110', ridge='#5a5452', warm='#3b3431')   # dark charcoal
+SKIN = dict(base='#4c4846', crease='#1b1918', ridge='#7b7471', warm='#544a46')   # ashen grey
 
 
 # ------------------------------------------------------------------ the body
@@ -796,25 +796,25 @@ def worn_material(name, kind):
         col = mix(rng(noise(12, 4), 0.3, 0.7, 0, 0.3), lin('#222224'), lin('#333236'))
         col = mix(rust, col, mix(rng(noise(30, 3), 0.4, 0.6), lin('#3e1d0f'), lin('#6e3416')))
         col = mix(op('MULTIPLY', grime, 0.75), col, lin('#100e0d'))
-        col = mix(op('MULTIPLY', edge, 0.8), col, lin('#8e8c88'))
-        col = mix(op('MULTIPLY', scratch, 0.8), col, lin('#9c9a96'))
+        col = mix(op('MULTIPLY', edge, 0.6), col, lin('#5c5a57'))
+        col = mix(op('MULTIPLY', scratch, 0.5), col, lin('#64625f'))
         col = mix(op('MULTIPLY', pits, 0.55), col, lin('#120f0e'))
         col = mix(op('MULTIPLY', blood, 0.8), col, lin('#2a0805'))
-        rough = op('ADD', 0.55, op('ADD', op('MULTIPLY', rust, 0.4), op('MULTIPLY', op('ADD', edge, scratch), -0.2)))
+        rough = op('ADD', 0.62, op('ADD', op('MULTIPLY', rust, 0.35), op('MULTIPLY', op('ADD', edge, scratch), -0.12)))
         metal = op('SUBTRACT', 1.0, op('MULTIPLY', op('MAXIMUM', rust, grime), 0.85))
         height = op('ADD', op('MULTIPLY', pits, -0.6), op('ADD', op('MULTIPLY', noise(25, 6), 0.3),
                                                           op('MULTIPLY', scratch, -0.5)))
     elif kind == 'silver':
         tarnish = op('MAXIMUM', op('MULTIPLY', crev, 1.0), op('MULTIPLY', blot, 0.6))
         film = rng(noise(5, 5), 0.5, 0.66)                                           # a dull yellowish film
-        col = mix(rng(noise(10, 4), 0.3, 0.7, 0, 0.4), lin('#8d8d90'), lin('#a3a3a6'))
+        col = mix(rng(noise(10, 4), 0.3, 0.7, 0, 0.4), lin('#5a5a5d'), lin('#69696c'))
         col = mix(op('MULTIPLY', film, 0.4), col, lin('#6e6656'))
         col = mix(tarnish, col, lin('#1c1b1d'))
         col = mix(op('MULTIPLY', grime, 0.6), col, lin('#0e0d0c'))
-        col = mix(op('MULTIPLY', edge, 0.9), col, lin('#d8d8da'))
-        col = mix(op('MULTIPLY', scratch, 0.7), col, lin('#e0e0e2'))
+        col = mix(op('MULTIPLY', edge, 0.7), col, lin('#9a9a9d'))
+        col = mix(op('MULTIPLY', scratch, 0.45), col, lin('#8e8e91'))
         col = mix(op('MULTIPLY', blood, 0.7), col, lin('#2a0805'))
-        rough = op('ADD', 0.34, op('ADD', op('MULTIPLY', tarnish, 0.4), op('MULTIPLY', op('ADD', edge, scratch), -0.15)))
+        rough = op('ADD', 0.46, op('ADD', op('MULTIPLY', tarnish, 0.35), op('MULTIPLY', op('ADD', edge, scratch), -0.1)))
         metal = op('SUBTRACT', 1.0, op('MULTIPLY', op('MAXIMUM', tarnish, grime), 0.5))
         height = op('ADD', op('MULTIPLY', noise(30, 6), 0.35), op('ADD', op('MULTIPLY', rng(vor(60), 0.0, 0.2, 1.0, 0.0), -0.3),
                                                                      op('MULTIPLY', scratch, -0.5)))
