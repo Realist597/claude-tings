@@ -139,6 +139,26 @@ def skin_maps(nmap):
                 spray[y, x] = rng.uniform(0.4, 1.0)
     blood = np.clip(ndi.gaussian_filter(spray, 0.9) * 6 + blotch(6, 0.75) * 0.8, 0, 1)
     cuts = lines(7 if nmap == 'normal_torso' else 5, 18, 60, 0.7)
+    # veins: meandering, branching, standing proud of the skin
+    vein = np.zeros((H, W))
+    seeds = [None] * (16 if nmap == 'normal_torso' else 12)
+    while seeds:
+        s0 = seeds.pop()
+        if s0 is None:
+            i = rng.integers(len(xs))
+            x, y, ang, life = float(xs[i]), float(ys[i]), rng.uniform(0, math.tau), int(rng.integers(70, 170))
+        else:
+            x, y, ang, life = s0
+        for _ in range(life):
+            ang += rng.normal(0, 0.16)
+            x, y = x + math.cos(ang) * 1.4, y + math.sin(ang) * 1.4
+            xi, yi = int(x), int(y)
+            if not (0 <= xi < W and 0 <= yi < H and island[yi, xi]):
+                break
+            vein[yi, xi] = 1.0
+            if rng.random() < 0.025 and len(seeds) < 40:
+                seeds.append((x, y, ang + rng.choice((-1, 1)) * rng.uniform(0.5, 1.0), int(rng.integers(20, 60))))
+    vein = np.clip(ndi.gaussian_filter(vein, 1.2) * 4, 0, 1)
     scrapes = lines(10, 10, 35, 1.6) * (0.5 + 0.5 * blotch(2, 0.0))
     paint(dust, '#7a746e', 0.2)
     paint(bruise, '#30282b', 0.25)
@@ -146,10 +166,11 @@ def skin_maps(nmap):
     paint(scrapes, '#7a5a50', 0.35)
     paint(blood, '#3b0d09', 0.75)
     paint(cuts, '#4a120d', 0.85)
+    paint(vein, '#34323a', 0.3)
     rough = np.clip(0.8 + 0.1 * crease[..., 0] - 0.05 * ridge[..., 0] + 0.03 * fine + 0.04 * pores + 0.05 * dust
                     - 0.08 * scar - 0.1 * blood * island, 0.6, 0.97)
     # the detail's normals (pores and grain dimple in, scars stand proud), laid over the body's own normal map
-    height = -0.6 * pores + 0.25 * grain + 1.8 * scar - 1.2 * cuts - 0.3 * scrapes
+    height = -0.6 * pores + 0.25 * grain + 1.8 * scar - 1.2 * cuts - 0.3 * scrapes + 1.6 * vein
     gy, gx = np.gradient(ndi.gaussian_filter(height, 0.8))
     d = np.dstack([-gx * 0.9, gy * 0.9, np.ones_like(gx)])
     d /= np.linalg.norm(d, axis=2, keepdims=True)
@@ -377,7 +398,7 @@ LEG_C = (0.94, 0.0)
 
 def cuff(part, parts, c, z0, z1):
     """an iron cuff between two rounded silver rims, a ring of domed silver studs round its middle"""
-    r = girth(parts, c, z0, z1, 48, 0.05)
+    r = girth(parts, c, z0, z1, 72, 0.022, smooth=1)     # hugging the limb's own blocky shape
     H = z1 - z0
     band = [(x + 0.035, y) for x, y in rrect(0.07, H - 0.16, 0.025)]
     seed = int(c[0] * 100 + z0 * 10)
@@ -612,25 +633,26 @@ def head_point(theta, el, lift=0.0):
     return HEAD + Vector(lerp(HMAP['P'])) * (HD.R6_R * K) + n * lift
 
 
-def clump_path(theta, el, length, flare, seed_off=Vector()):
-    """a clump of hair from its root on the scalp: out and up a little for volume, then swept back and down, its tip
-    kicking outward"""
-    root = head_point(theta, el, 0.02)
+def spike_path(theta, el, length, sweep, rise, droop=0.35, bend=Vector()):
+    """a spike of hair from its root on the head: out along the head's normal, swung back by `sweep` (0 straight
+    out, 1 straight back) and up by `rise`, then drooping under its own weight toward the tip"""
+    root = head_point(theta, el, -0.04)
+    n = (head_point(theta, el, 1.0) - head_point(theta, el, 0.0)).normalized()
     out = Vector((math.cos(math.radians(theta)), math.sin(math.radians(theta)), 0))
-    backish = (Vector((0, 1, 0)) * 0.75 + out * 0.6).normalized()
-    up = Vector((0, 0, 1))
-    p1 = root + head_dir(theta, el) * 0.32 + backish * 0.25 + up * 0.18 * (el / 60)
-    p2 = p1 + backish * 0.45 * length + out * 0.15 - up * 0.75 * length
-    p3 = p2 + backish * 0.25 * length + out * (0.25 + flare) - up * 0.75 * length + seed_off
-    # stay clear of the back and shoulders on the way down
-    for p in (p2, p3):
-        if p.z < 7.6:
-            p.y = max(p.y, 1.45 + 0.15 * (7.6 - p.z)) if theta > 30 and theta < 150 else p.y
+    back = (Vector((0, 1, 0)) + out * 0.22).normalized()
+    d0 = (n * (1 - sweep) + back * sweep + Vector((0, 0, rise))).normalized()
+    pts = [root]
+    for t in (0.33, 0.66, 1.0):
+        p = root + d0 * (length * t) - Vector((0, 0, droop * length)) * t * t + bend * t * t
+        # stay clear of the back and shoulders on the way down
+        if p.z < 7.75:
+            if 15 < theta < 165:
+                p.y = max(p.y, 1.32 + 0.25 * (7.75 - p.z))
             rad = math.hypot(p.x, p.y)
-            if p.z < 7.5 and rad < 1.4:
-                s_ = 1.4 / max(rad, 1e-3)
-                p.x, p.y = p.x * s_, p.y * s_
-    return [root, p1, p2, p3]
+            if rad < 1.5:
+                p.x, p.y = p.x * 1.5 / max(rad, 1e-3), p.y * 1.5 / max(rad, 1e-3)
+        pts.append(p)
+    return pts
 
 
 def catmull(pts, t):
@@ -642,42 +664,42 @@ def catmull(pts, t):
     return 0.5 * (2 * p1 + (p2 - p0) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f + (3 * p1 - p0 - 3 * p2 + p3) * f ** 3)
 
 
-def hair_clump(pts, width, rows=12, name='clump', tag=None):
-    """a clump: a lens-shaped section, widest a third of the way along, swept along the path to a point. Its
-    vertices remember how far along they are (for the rig)"""
-    sec = [(math.cos(TAU * k / 6), 0.35 * math.sin(TAU * k / 6)) for k in range(6)]
+def spike(pts, width, thick=0.42, rows=10, name='spike', tag=None):
+    """a spike: a flattened diamond section, broad at the root and narrowing to a sharp point, swept along its
+    path; its flat faces turned outward from the head. Its vertices remember how far along they are (for the rig)"""
+    sec = [(1, 0), (0.45, thick), (-0.45, thick), (-1, 0), (-0.45, -thick), (0.45, -thick)]
 
     def frame(t):
         p = catmull(pts, t)
         tg = (catmull(pts, min(1, t + 1e-3)) - catmull(pts, max(0, t - 1e-3))).normalized()
-        radial = Vector((p.x - HEAD.x, p.y - HEAD.y, (p.z - HEAD.z) * 0.3)).normalized()
-        w = tg.cross(radial).normalized()
-        n = w.cross(tg).normalized()
-        return p, w, n
+        radial = Vector((p.x - HEAD.x, p.y - HEAD.y, (p.z - HEAD.z) * 0.4)).normalized()
+        w = tg.cross(radial)
+        w = w.normalized() if w.length > 1e-6 else Vector((1, 0, 0))
+        return p, w, w.cross(tg).normalized()
 
     def fn(u, j):
-        t = u
-        p, w, n = frame(t)
-        wd = width * (0.55 + 0.45 * math.sin(math.pi * min(t / 0.35, 1.0) / 2)) * (1 - t) ** 0.85
-        x, y = sec[j % 6]
+        p, w, n = frame(u)
+        wd = width * (0.8 + 0.2 * math.sin(math.pi * min(u / 0.25, 1.0) / 2)) * (1 - u) ** 0.95
+        x, y = sec[j % len(sec)]
         return tuple(p + w * x * wd + n * y * wd)
-    ob = surface('Hair', 'Hair', fn, [i / rows for i in range(rows + 1)], list(range(7)), closed_v=True,
-                 out=lambda q: tuple(HEAD), name=name)
+    ob = surface('Hair', 'Hair', fn, [(i / rows) ** 0.9 for i in range(rows + 1)], list(range(len(sec) + 1)),
+                 closed_v=True, out=lambda q: tuple(HEAD), name=name)
     ob['hair_kind'], ob['hair_theta'] = tag[0], float(tag[1])
     return ob
 
 
 def scalp():
-    """the cap of hair on the head: down to a hairline across the brow, over the ears, low at the nape"""
+    """the cap the spikes grow from: down to a hairline across the brow, over the temples, low at the nape, and
+    raised off the head for volume, most over the crown"""
     def hairline(t):     # elevation (deg) of the hairline at angle t (front = -90)
         f = math.cos(math.radians(t + 90))       # 1 at the front, -1 at the back
-        return 18 + 22 * max(f, 0) ** 2 - 40 * max(-f, 0)
+        return 24 + 20 * max(f, 0) ** 2 - 36 * max(-f, 0)
     nu, nv = 48, 10
 
     def fn(u, v):
         t = -90 + 360 * u
         el = hairline(t) + (90 - hairline(t)) * v
-        return tuple(head_point(t, el, 0.05))
+        return tuple(head_point(t, el, 0.05 + 0.2 * math.sin(math.pi * v / 2) ** 1.5))
     ob = surface('Hair', 'Hair', fn, [i / nu for i in range(nu + 1)], [j / nv for j in range(nv + 1)], closed_u=True,
                  out=lambda q: tuple(HEAD), name='scalp')
     ob['hair_kind'], ob['hair_theta'] = 'scalp', 0.0
@@ -685,23 +707,38 @@ def scalp():
 
 
 def hair():
+    """a wild mane of thick jagged spikes: up and back off the crown, back and out round the sides, down over the
+    upper back, a few jagged locks over the brow and short ones at the temples"""
     import random
-    rnd = random.Random(17)
-    rows = [(68, list(range(-150, 211, 22)), 1.0), (42, list(range(-40, 221, 18)), 1.15), (16, list(range(-10, 191, 16)), 1.2)]
+    rnd = random.Random(23)
     scalp()
-    for el, thetas, ln in rows:
-        for th in thetas:
-            th_ = th + rnd.uniform(-6, 6)
-            if el < 50 and -135 < th_ < -45:
-                continue                       # leave the face clear
-            length = ln * rnd.uniform(0.75, 1.25) * (0.55 if -150 < th_ < -30 else 1.0)
-            pts = clump_path(th_, el + rnd.uniform(-5, 5), length, rnd.uniform(0.0, 0.35),
-                             Vector((rnd.uniform(-0.15, 0.15), rnd.uniform(-0.1, 0.2), rnd.uniform(-0.15, 0.15))))
-            hair_clump(pts, rnd.uniform(0.32, 0.46), tag=('clump', th_))
-    # strands framing the face, either side
-    for th in (-128, -52):
-        pts = clump_path(th, 30, 0.7, 0.1)
-        hair_clump(pts, 0.22, tag=('clump', th))
+    face = lambda th, el: el < 52 and -138 < th < -42
+    rows = (  # elevation, angles round, length, sweep back, rise, width
+        (89, range(-90, 271, 90), (1.4, 1.8), 0.95, 0.35, (0.52, 0.6)),
+        (80, range(-105, 256, 24), (1.5, 2.0), 0.92, 0.28, (0.5, 0.6)),
+        (68, range(-160, 201, 20), (1.7, 2.2), 0.88, 0.12, (0.48, 0.58)),
+        (50, range(-170, 191, 18), (1.8, 2.4), 0.85, -0.05, (0.46, 0.56)),
+        (32, range(-40, 221, 17), (1.9, 2.5), 0.8, -0.25, (0.44, 0.54)),
+        (14, range(-10, 191, 17), (1.9, 2.6), 0.75, -0.45, (0.42, 0.52)),
+        (-4, range(25, 156, 18), (1.6, 2.2), 0.7, -0.7, (0.4, 0.48)),
+    )
+    for el, ths, (l0, l1), sweep, rise, (w0, w1) in rows:
+        for th in ths:
+            th_ = th + rnd.uniform(-7, 7)
+            el_ = el + rnd.uniform(-4, 4)
+            if face(th_, el_):
+                continue
+            ln = rnd.uniform(l0, l1) * (0.7 if -160 < th_ < -20 else 1.0)
+            bend = Vector((rnd.uniform(-0.25, 0.25), rnd.uniform(-0.1, 0.2), rnd.uniform(-0.15, 0.25)))
+            pts = spike_path(th_, el_, ln, min(sweep + rnd.uniform(-0.08, 0.08), 1.0), rise + rnd.uniform(-0.12, 0.12),
+                             0.42 + rnd.uniform(-0.1, 0.1), bend)
+            spike(pts, rnd.uniform(w0, w1), tag=('clump', th_))
+    for th, ln in ((-112, 0.85), (-96, 0.7), (-80, 0.9), (-66, 0.65)):      # locks falling over the brow
+        pts = spike_path(th, 50, ln, -0.2, -0.75, 0.15, Vector((rnd.uniform(-0.1, 0.1), -0.15, 0)))
+        spike(pts, 0.3, tag=('clump', th))
+    for th in (-148, -32):                                                   # at the temples
+        pts = spike_path(th, 30, 0.75, 0.3, -0.8, 0.1)
+        spike(pts, 0.28, tag=('clump', th))
 
 
 def hair_rig(ob):
@@ -712,7 +749,7 @@ def hair_rig(ob):
     arm = bpy.data.objects.new('HairRig', ad)
     bpy.context.scene.collection.objects.link(arm)
     knots = (0.0, 0.25, 0.5, 0.75, 1.0)
-    paths = {c: clump_path(c, 40, 1.15, 0.15) for c in CHAINS}
+    paths = {c: spike_path(c, 32, 2.2, 0.8, -0.25, 0.42) for c in CHAINS}
     with bpy.context.temp_override(active_object=arm, object=arm, selected_objects=[arm], selected_editable_objects=[arm]):
         bpy.context.view_layer.objects.active = arm
         bpy.ops.object.mode_set(mode='EDIT')

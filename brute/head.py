@@ -134,11 +134,11 @@ def on(x, z, out, r):
 
 EYE = (0.355, 0.125)                      # the left eye, on the face
 EYE_R = 0.115
-EYE_C = np.array([EYE[0], float(face_y(*EYE)) + 0.05 + EYE_R, EYE[1]])    # its eyeball's centre
+EYE_C = np.array([EYE[0], float(face_y(*EYE)) + 0.065 + EYE_R, EYE[1]])   # its eyeball's centre, sunk deep
 EYE_W = 0.145                             # half the width of the opening between its lids
 LID_T = 0.03                              # how far the lids stand off the eyeball
 Z_M = -0.43                               # the line the teeth meet on
-X_M = 0.28                                # the mouth's corners
+X_M = 0.33                                # the mouth's corners
 
 
 @form('the plain R6 head')
@@ -146,28 +146,28 @@ def _base(P, M, d):
     return rcyl(P, 1.0, 1.0, 0.5)
 
 
-@form('the brow: a heavy ridge, its inner ends dragged down into a scowl')
+@form('the brow: a massive overhanging ridge, its inner ends dragged down into a scowl')
 def _brow(P, M, d):
-    d = add(d, tube(M, [on(0.0, 0.25, 0.05, 0.06), on(0.15, 0.285, 0.09, 0.08), on(0.36, 0.34, 0.1, 0.085),
-                        on(0.58, 0.32, 0.06, 0.07), on(0.78, 0.26, -0.03, 0.05)], 20), 0.09)
-    d = add(d, ellipsoid(P, at(0.0, 0.25, -0.02), (0.1, 0.08, 0.08)), 0.06)     # bunched between the brows
+    d = add(d, tube(M, [on(0.0, 0.22, 0.075, 0.075), on(0.15, 0.27, 0.13, 0.1), on(0.36, 0.33, 0.15, 0.11),
+                        on(0.58, 0.32, 0.1, 0.09), on(0.8, 0.26, -0.02, 0.06)], 20), 0.1)
+    d = add(d, ellipsoid(P, at(0.0, 0.22, 0.0), (0.12, 0.1, 0.09)), 0.06)       # bunched between the brows
     return d
 
 
 @form('eye sockets, carved in deepest under the brow')
 def _sockets(P, M, d):
-    d = carve(d, ellipsoid(M, at(EYE[0], EYE[1] + 0.005, 0.03), (0.17, 0.12, 0.1)), 0.06)
-    return carve(d, ellipsoid(M, at(EYE[0] - 0.01, EYE[1] + 0.06, 0.05), (0.16, 0.08, 0.085)), 0.05)
+    d = carve(d, ellipsoid(M, at(EYE[0], EYE[1] + 0.005, 0.03), (0.18, 0.13, 0.12)), 0.06)
+    return carve(d, ellipsoid(M, at(EYE[0] - 0.01, EYE[1] + 0.06, 0.06), (0.17, 0.09, 0.11)), 0.05)
 
 
-@form('the nose: broad and flattened, broken once, its wings flared')
+@form('the nose: broad and flat as a beast\'s, broken once, its nostrils flared wide')
 def _nose(P, M, d):
-    d = add(d, tube(P, [on(0.0, 0.25, 0.015, 0.05), on(0.0, 0.12, 0.07, 0.058), on(0.014, 0.04, 0.115, 0.064),
-                        on(0.007, -0.05, 0.16, 0.074), on(0.0, -0.11, 0.195, 0.082)], 12), 0.05)
-    d = add(d, ellipsoid(P, at(0.0, -0.12, 0.115), (0.1, 0.095, 0.08)), 0.04)    # the tip
-    d = add(d, ellipsoid(M, at(0.12, -0.15, 0.0), (0.075, 0.08, 0.065)), 0.04)   # the wings
-    d = add(d, ellipsoid(P, at(0.0, -0.14, -0.08), (0.2, 0.1, 0.1)), 0.08)       # its base, into the face
-    d = carve(d, ellipsoid(M, at(0.064, -0.205, 0.13), (0.032, 0.05, 0.025)), 0.015)   # the nostrils
+    d = add(d, tube(P, [on(0.0, 0.22, 0.02, 0.05), on(0.0, 0.12, 0.06, 0.065), on(0.016, 0.04, 0.1, 0.075),
+                        on(0.008, -0.05, 0.14, 0.085), on(0.0, -0.11, 0.17, 0.095)], 12), 0.05)
+    d = add(d, ellipsoid(P, at(0.0, -0.12, 0.095), (0.12, 0.1, 0.085)), 0.04)    # the tip
+    d = add(d, ellipsoid(M, at(0.145, -0.15, 0.0), (0.095, 0.09, 0.075)), 0.04)  # the wings
+    d = add(d, ellipsoid(P, at(0.0, -0.14, -0.08), (0.25, 0.1, 0.1)), 0.08)      # its base, into the face
+    d = carve(d, ellipsoid(M, at(0.074, -0.2, 0.115), (0.042, 0.06, 0.03)), 0.015)    # the nostrils
     return d
 
 
@@ -179,34 +179,35 @@ def arch(x):
 def lip_lift(x):
     """how far the upper lip is drawn up off the teeth (most over the canines: a snarl), and the lower lip down"""
     c = np.clip(1 - (np.abs(x) / X_M) ** 2.5, 0, 1) ** 0.6
-    up = (0.06 + 0.032 * np.exp(-((np.abs(x) - 0.145) / 0.07) ** 2)) * c
-    return up, 0.046 * c ** 0.8
+    up = (0.07 + 0.045 * np.exp(-((np.abs(x) - 0.19) / 0.08) ** 2)) * c
+    return up, 0.058 * c ** 0.8
 
 
 def mouth_line(x):
     return Z_M - 0.03 * (np.asarray(x) / X_M) ** 2       # its corners pulled down
 
 
-@form('the muzzle, and a square chin')
+@form('the muzzle pushed out like a snout, and a square jutting chin')
 def _muzzle(P, M, d):
-    d = add(d, ellipsoid(P, at(0.0, -0.44, -0.26), (0.42, 0.34, 0.25)), 0.12)
-    d = add(d, ellipsoid(M, at(0.3, -0.46, 0.0), (0.05, 0.05, 0.05)), 0.04)      # the knots at the corners
-    d = add(d, rbox(P, at(0.0, -0.7, -0.08), (0.25, 0.14, 0.15), 0.1), 0.1)
+    d = add(d, ellipsoid(P, at(0.0, -0.44, -0.24), (0.47, 0.34, 0.26)), 0.12)
+    d = add(d, ellipsoid(M, at(0.35, -0.47, 0.0), (0.055, 0.055, 0.055)), 0.04)  # the knots at the corners
+    d = add(d, rbox(P, at(0.0, -0.72, -0.03), (0.3, 0.15, 0.16), 0.1), 0.1)
     return d
 
 
 @form('the snarl: cheeks bunched up, the sides of the nose drawn up')
 def _snarl(P, M, d):
-    d = add(d, ellipsoid(M, at(0.3, -0.16, -0.08), (0.13, 0.11, 0.11)), 0.1)
-    d = add(d, ellipsoid(M, at(0.17, -0.03, -0.06), (0.07, 0.08, 0.1)), 0.06)
+    d = add(d, ellipsoid(M, at(0.34, -0.17, -0.08), (0.15, 0.12, 0.12)), 0.1)
+    d = add(d, ellipsoid(M, at(0.19, -0.03, -0.06), (0.08, 0.08, 0.1)), 0.06)
     return d
 
 
 def teeth(P, M):
-    """the teeth showing in the snarl: upper incisors and fangs, the lower front teeth behind them, clenched"""
+    """the teeth showing in the snarl: upper incisors and long fangs, the lower front teeth behind them,
+    clenched, and two tusks jutting up from the lower jaw in front of the upper lip"""
     d = np.full(P.shape[:-1], 1e9)
-    for xc, w, h, kind in ((0.042, 0.082, 0.1, 'i'), (0.115, 0.064, 0.09, 'i'), (0.175, 0.058, 0.115, 'c'),
-                           (0.228, 0.05, 0.075, 'p')):
+    for xc, w, h, kind in ((0.042, 0.082, 0.1, 'i'), (0.118, 0.066, 0.092, 'i'), (0.19, 0.062, 0.17, 'c'),
+                           (0.25, 0.055, 0.08, 'p'), (0.3, 0.05, 0.07, 'p')):
         s = 2.2 * xc
         t = np.array([1, s, 0]) / math.hypot(1, s)
         n = np.array([s, -1, 0]) / math.hypot(1, s)
@@ -214,21 +215,24 @@ def teeth(P, M):
         if kind == 'c':
             top = front - n * 0.03 + np.array([0, 0, Z_M + 0.105])
             tip = front - n * 0.026 + np.array([0, 0, Z_M + 0.105 - h])
-            d = np.minimum(d, tube(M, [(*top, 0.029), (*(top * 0.4 + tip * 0.6), 0.025), (*tip, 0.008)], 6))
+            d = np.minimum(d, tube(M, [(*top, 0.032), (*(top * 0.45 + tip * 0.55), 0.026), (*tip, 0.006)], 6))
         else:
             c = front - n * 0.028 + np.array([0, 0, Z_M + 0.105 - h / 2])
             d = np.minimum(d, rbox(M, c, (w / 2 - 0.003, 0.028, h / 2), 0.014, np.stack([t, -n, (0, 0, 1)], 1)))
-    for xc, w, h in ((0.031, 0.06, 0.085), (0.09, 0.056, 0.085), (0.146, 0.056, 0.095), (0.2, 0.05, 0.075)):
+    for xc, w, h in ((0.031, 0.06, 0.085), (0.09, 0.056, 0.085), (0.146, 0.056, 0.09), (0.205, 0.05, 0.075),
+                     (0.27, 0.05, 0.07)):
         s = 2.2 * xc
         t = np.array([1, s, 0]) / math.hypot(1, s)
         n = np.array([s, -1, 0]) / math.hypot(1, s)
         c = np.array([xc, arch(xc) + 0.03, Z_M - 0.005 - h / 2]) - n * 0.026
         d = np.minimum(d, rbox(M, c, (w / 2 - 0.003, 0.026, h / 2), 0.013, np.stack([t, -n, (0, 0, 1)], 1)))
-    return d
+    tusk = [(0.24, arch(0.24) + 0.0, Z_M - 0.12, 0.055), (0.255, arch(0.255) - 0.06, Z_M - 0.02, 0.046),
+            (0.272, arch(0.272) - 0.1, Z_M + 0.09, 0.03), (0.29, arch(0.29) - 0.115, Z_M + 0.2, 0.005)]
+    return np.minimum(d, tube(M, tusk, 12))
 
 
 def gums(M):
-    gx = np.linspace(0, 0.26, 8)
+    gx = np.linspace(0, 0.31, 9)
     return np.minimum(tube(M, [(x, arch(x) + 0.05, Z_M + 0.12, 0.044) for x in gx]),
                       tube(M, [(x, arch(x) + 0.08, Z_M - 0.11, 0.044) for x in gx]))
 
@@ -254,7 +258,7 @@ def lips(M):
             tube(M, [(xx, arch(xx) - 0.022, zz - ll - r * 0.5, r) for xx, zz, ll, r in zip(xs, zs, l_, rl)], 24))
 
 
-@form('the mouth: the lips drawn back off clenched teeth')
+@form('the mouth: a wide snarl, the lips drawn back off fangs and tusks')
 def _mouth(P, M, d):
     d = carve(d, mouth_hole(M), 0.012)
     d = np.minimum(d, np.minimum(teeth(P, M), gums(M)))
@@ -358,11 +362,11 @@ def detail(name):
 
 @detail('creases: the scowl, the wrinkled nose, the folds of the snarl')
 def _creases(X, Z):
-    h = mirror(lambda x, z: ridge(x, z, [(0.045, 0.2), (0.06, 0.3), (0.08, 0.4)], 0.014, -0.02, ends))(X, Z)
+    h = mirror(lambda x, z: ridge(x, z, [(0.045, 0.2), (0.06, 0.3), (0.08, 0.4)], 0.015, -0.03, ends))(X, Z)
     h += ridge(X, Z, [(-0.09, 0.2), (0.0, 0.185), (0.09, 0.2)], 0.012, -0.012, ends)
     h += mirror(lambda x, z: sum(ridge(x, z, [(0.045, zz), (0.1, zz - 0.035), (0.14, zz - 0.08)], 0.011, -0.009, ends)
                                  for zz in (0.13, 0.09, 0.05)))(X, Z)
-    h += mirror(lambda x, z: ridge(x, z, [(0.2, -0.1), (0.25, -0.2), (0.31, -0.33), (0.34, -0.47)], 0.018, -0.035,
+    h += mirror(lambda x, z: ridge(x, z, [(0.23, -0.1), (0.3, -0.2), (0.37, -0.34), (0.4, -0.5)], 0.02, -0.045,
                                    lambda a: np.clip(a / 0.1, 0, 1) * np.clip((1 - a) / 0.35, 0, 1)))(X, Z)
     h += mirror(lambda x, z: ridge(x, z, [(0.25, 0.0), (0.36, -0.03), (0.47, -0.005)], 0.012, -0.012, ends))(X, Z)
     h += mirror(lambda x, z: sum(ridge(x, z, [(0.53, 0.2 - k * 0.05), (0.6, 0.21 - k * 0.075)], 0.011, -0.009, ends)
@@ -372,11 +376,26 @@ def _creases(X, Z):
     return h
 
 
-@detail('detail: forehead lines, an old scar across the brow, another on the cheek')
+VEINS = ([(0.11, 0.8), (0.14, 0.68), (0.1, 0.58), (0.13, 0.48)], [(0.14, 0.68), (0.22, 0.62), (0.26, 0.55)],
+         [(0.62, 0.72), (0.67, 0.57), (0.71, 0.44), (0.75, 0.3)], [(0.67, 0.57), (0.57, 0.5)],
+         [(-0.62, 0.72), (-0.68, 0.58), (-0.7, 0.45), (-0.76, 0.32)], [(-0.7, 0.45), (-0.6, 0.4)])
+SCARS = ([(0.2, 0.66), (0.29, 0.44), (0.36, 0.3)], [(0.5, 0.02), (0.58, -0.14), (0.64, -0.3)],
+         [(-0.08, 0.1), (-0.22, -0.02), (-0.4, -0.1), (-0.56, -0.24)])
+
+
+@detail('veins standing out on the brow and temples')
+def _veins(X, Z):
+    h = np.zeros_like(X)
+    for pts in VEINS:
+        h += ridge(X, Z, pts, 0.012, 0.014, lambda a: np.clip(a / 0.08, 0, 1) * (1 - 0.5 * a))
+    return h
+
+
+@detail('detail: forehead lines, old scars across the brow, the cheek and the nose')
 def _detail(X, Z):
     h = ridge(X, Z, [(-0.42, 0.55), (-0.2, 0.53), (0.0, 0.51), (0.2, 0.53), (0.42, 0.55)], 0.016, -0.011, ends)
     h += ridge(X, Z, [(-0.36, 0.64), (0.0, 0.62), (0.36, 0.64)], 0.016, -0.009, ends)
-    for pts in ([(0.2, 0.66), (0.29, 0.44), (0.36, 0.3)], [(0.5, 0.02), (0.58, -0.14), (0.64, -0.3)]):
+    for pts in SCARS:
         h += ridge(X, Z, pts, 0.016, 0.01, ends)
         dd, a = seg_dist(X, Z, pts)
         h -= 0.007 * ends(a) * np.exp(-((dd - 0.026) / 0.012) ** 2)
@@ -466,6 +485,20 @@ def normals(P, upto=None, e=0.002):
     return g / np.maximum(length(g)[..., None], 1e-9)
 
 
+def ungraze(P, D, upto, passes=6):
+    """where a ray only grazes the surface (under the brow, say), neighbouring rays land at very different depths and
+    the surface comes out ribbed: there, ease each point's depth along its ray toward its neighbours'"""
+    O = origin(D)
+    r = ((P - O) * D).sum(-1)
+    g = np.clip(1 - np.abs((normals(P, upto) * D).sum(-1)) / 0.5, 0, 1)
+    g = np.maximum(g, (np.roll(g, 1, 0) + np.roll(g, -1, 0)) / 2)
+    for _ in range(passes):
+        rp = np.pad(r, ((0, 0), (1, 1)), mode='edge')
+        avg = (np.roll(r, 1, 0) + np.roll(r, -1, 0) + rp[:, :-2] + rp[:, 2:]) / 4
+        r = r + g * (avg - r) * 0.8
+    return O + D * r[..., None]
+
+
 def points(G, scale, centre, upto=None):
     """the sculpted head's points on the grid (its two pole points last), with the first `upto` steps of the sculpt
     (the forms, then the details)"""
@@ -473,6 +506,7 @@ def points(G, scale, centre, upto=None):
     fu = None if upto is None or upto > nf else upto
     du = len(DETAILS) if upto is None else max(0, upto - nf)
     P = cast(G['D'], fu)
+    P = ungraze(P, G['D'], fu)
     if du:
         N = normals(P, fu)
         front = np.clip((-G['D'][..., 1] - 0.15) / 0.35, 0, 1)
@@ -637,9 +671,12 @@ def paint(G, skin):
     rough = rough * (1 - tooth) + 0.42 * tooth
     put(tooth * np.clip(occ * 2.2 - 0.6, 0, 1), '#1a120c', 0.8)               # grime between them
     # scars (paler, on the brow and the cheek), and dried blood from the brow's down past the eye
-    for pts in ([(0.2, 0.66), (0.29, 0.44), (0.36, 0.3)], [(0.5, 0.02), (0.58, -0.14), (0.64, -0.3)]):
+    for pts in SCARS:
         dd, a = seg_dist(X, Z, pts)
         put(np.exp(-(dd / 0.014) ** 2) * ends(a) * front, '#7e6c64', 0.6, 0.65)
+    for pts in VEINS:
+        dd, a = seg_dist(X, Z, pts)
+        put(np.exp(-(dd / 0.012) ** 2) * front, '#2a282c', 0.35)
     trickle, a = seg_dist(X, Z, [(0.37, 0.31), (0.39, 0.24), (0.47, 0.2), (0.5, 0.08), (0.52, -0.02)])
     put(np.exp(-(trickle / (0.012 * (1 - 0.6 * a))) ** 2) * front * 0.85, '#300a07', 1.0, 0.62)
     spray = np.clip((plasma(P, 40, 7, 2) - 0.55) / 0.2, 0, 1) * np.exp(-(((X + 0.5) / 0.18) ** 2 + ((Z + 0.15) / 0.2) ** 2))
