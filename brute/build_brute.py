@@ -25,7 +25,7 @@ MATS = A.MATS
 # the body's parts as exported from Studio, and the normal map each uses (matched by UV layout)
 PARTS = {'Torso1': ('Torso', 'normal_torso'), 'ArmL1': ('LeftArm', 'normal_a'), 'ArmR1': ('RightArm', 'normal_a'),
          'LegL1': ('LeftLeg', 'normal_b'), 'LegR1': ('RightLeg', 'normal_b')}
-SKIN = dict(base='#5d514c', crease='#231c1a', ridge='#86776f', warm='#6a4e44')
+SKIN = dict(base='#403d3c', crease='#151413', ridge='#6a6563', warm='#463e3b')   # dark ashen grey
 
 
 # ------------------------------------------------------------------ the body
@@ -53,8 +53,9 @@ def import_body():
 
 
 def skin_maps(nmap):
-    """from a part's normal map: a colour map (dark grey-brown skin, its creases deepened and its ridges lit, mottled)
-    and a roughness map (a slight sheen on the ridges). Returns the two as Blender images"""
+    """from a part's normal map: a colour map (dark grey-brown skin, its creases deepened and its ridges lit, mottled,
+    then battle-worn: grime in the creases, dust, bruises, dried blood, cuts and scrapes), a roughness map (matte
+    all over), and a detail normal map laid over the body's own. Returns the three as Blender images"""
     from scipy import ndimage as ndi
     from PIL import Image
     a = np.asarray(Image.open(os.path.join(SRC, nmap + '.png')).convert('RGB'), dtype=np.float64) / 255.0
@@ -99,9 +100,56 @@ def skin_maps(nmap):
     scar = np.clip(ndi.gaussian_filter(scar, 1.6) * 5, 0, 1)
     col = col * (1 - 0.06 * pores[..., None])
     col = col * (1 - 0.35 * scar[..., None]) + c('#8c776f') * 0.35 * scar[..., None]
-    rough = np.clip(0.58 + 0.12 * crease[..., 0] - 0.1 * ridge[..., 0] + 0.03 * fine + 0.06 * pores - 0.12 * scar, 0, 1)
+
+    # battle wear
+    def blotch(sigma, cut):
+        n = ndi.gaussian_filter(rng.standard_normal((H, W)), sigma)
+        n /= np.abs(n).max() + 1e-6
+        return np.clip((n - cut) / (1 - cut), 0, 1)
+
+    def lines(count, lo, hi, width):
+        m = np.zeros((H, W))
+        for _ in range(count):
+            i = rng.integers(len(xs))
+            x0, y0 = xs[i], ys[i]
+            ang, length = rng.uniform(0, math.pi), rng.uniform(lo, hi)
+            for t in np.linspace(-0.5, 0.5, int(length * 2)):
+                x, y = int(x0 + math.cos(ang) * length * t), int(y0 + math.sin(ang) * length * t)
+                if 0 <= x < W and 0 <= y < H and island[y, x]:
+                    m[y, x] = max(m[y, x], 1 - abs(t) * 1.6)
+        return np.clip(ndi.gaussian_filter(m, width) * 4, 0, 1)
+
+    def paint(mask, colour, k):
+        nonlocal col
+        m = (np.clip(mask, 0, 1) * k * island)[..., None]
+        col = col * (1 - m) + c(colour) * m
+
+    grime = np.clip(crease[..., 0] * 1.1 + blotch(5, 0.5) * 0.5, 0, 1) * (0.5 + 0.5 * blotch(16, 0.0))
+    dust = blotch(18, 0.3)
+    bruise = blotch(11, 0.5) * (0.5 + 0.5 * blotch(3, 0.0))
+    spray = np.zeros((H, W))                                 # dried blood: spatters of specks round a few hits
+    for _ in range(4 if nmap == 'normal_torso' else 3):
+        i = rng.integers(len(xs))
+        cx_, cy_ = xs[i], ys[i]
+        for _ in range(140):
+            r_ = abs(rng.normal(0, 22))
+            a_ = rng.uniform(0, math.tau)
+            x, y = int(cx_ + math.cos(a_) * r_), int(cy_ + math.sin(a_) * r_)
+            if 0 <= x < W and 0 <= y < H:
+                spray[y, x] = rng.uniform(0.4, 1.0)
+    blood = np.clip(ndi.gaussian_filter(spray, 0.9) * 6 + blotch(6, 0.75) * 0.8, 0, 1)
+    cuts = lines(7 if nmap == 'normal_torso' else 5, 18, 60, 0.7)
+    scrapes = lines(10, 10, 35, 1.6) * (0.5 + 0.5 * blotch(2, 0.0))
+    paint(dust, '#7a746e', 0.2)
+    paint(bruise, '#30282b', 0.25)
+    paint(grime, '#1f1a16', 0.35)
+    paint(scrapes, '#7a5a50', 0.35)
+    paint(blood, '#3b0d09', 0.75)
+    paint(cuts, '#4a120d', 0.85)
+    rough = np.clip(0.8 + 0.1 * crease[..., 0] - 0.05 * ridge[..., 0] + 0.03 * fine + 0.04 * pores + 0.05 * dust
+                    - 0.08 * scar - 0.1 * blood * island, 0.6, 0.97)
     # the detail's normals (pores and grain dimple in, scars stand proud), laid over the body's own normal map
-    height = -0.6 * pores + 0.25 * grain + 1.8 * scar
+    height = -0.6 * pores + 0.25 * grain + 1.8 * scar - 1.2 * cuts - 0.3 * scrapes
     gy, gx = np.gradient(ndi.gaussian_filter(height, 0.8))
     d = np.dstack([-gx * 0.9, gy * 0.9, np.ones_like(gx)])
     d /= np.linalg.norm(d, axis=2, keepdims=True)
@@ -117,7 +165,7 @@ def skin_maps(nmap):
         im = bpy.data.images.new(name, W, H, alpha=False)
         im.colorspace_settings.name = 'sRGB' if srgb else 'Non-Color'
         px = np.ones((H, W, 4))
-        px[..., :3] = np.where(arr > 0.04045, ((arr + 0.055) / 1.055) ** 2.4, arr / 12.92) if srgb else arr
+        px[..., :3] = arr          # a byte image takes its values as they're stored: sRGB stays sRGB
         im.pixels = px[::-1].astype(np.float32).ravel()
         os.makedirs(os.path.join(OUT, 'textures'), exist_ok=True)
         im.filepath_raw = os.path.join(OUT, 'textures', name + '.png')
@@ -146,6 +194,7 @@ def skin_material(nmap):
     nt.links.new(tr.outputs[0], b.inputs['Roughness'])
     nt.links.new(tn.outputs[0], nm.inputs['Color'])
     nt.links.new(nm.outputs[0], b.inputs['Normal'])
+    b.inputs['Specular IOR Level'].default_value = 0.3        # skin, matte: no shine
     MATS['Skin_' + nmap] = m
     return m
 
@@ -276,7 +325,7 @@ def ring(part, mat, c, zc, radii, profile, name='ring', nu=None, dent=0.0, wave=
 
 
 def boss(part, c, n, name='boss'):
-    """the belt's turned bronze boss: a domed centre, a raised ring, a stepped rim"""
+    """the belt's turned silver boss: a domed centre, a raised ring, a stepped rim"""
     n = Vector(n).normalized()
     s1 = n.cross(Vector((0, 0, 1))).normalized()
     s2 = n.cross(s1)
@@ -289,7 +338,7 @@ def boss(part, c, n, name='boss'):
         a = TAU * u
         r, hgt = prof[j]
         return tuple(c + (s1 * math.cos(a) + s2 * math.sin(a)) * r + n * hgt)
-    return surface(part, 'Bronze', fn, [i / 48 for i in range(49)], list(range(len(prof))), closed_u=True,
+    return surface(part, 'Silver', fn, [i / 48 for i in range(49)], list(range(len(prof))), closed_u=True,
                    out=lambda p: tuple(c - n * 5), name=name)
 
 
@@ -327,19 +376,19 @@ LEG_C = (0.94, 0.0)
 
 
 def cuff(part, parts, c, z0, z1):
-    """an iron cuff between two rounded bronze rims, a ring of domed bronze studs round its middle"""
+    """an iron cuff between two rounded silver rims, a ring of domed silver studs round its middle"""
     r = girth(parts, c, z0, z1, 48, 0.05)
     H = z1 - z0
     band = [(x + 0.035, y) for x, y in rrect(0.07, H - 0.16, 0.025)]
     seed = int(c[0] * 100 + z0 * 10)
     ring(part, 'Iron', c, (z0 + z1) / 2, r, band, name='cuff', nu=128, dent=0.012, wave=0.01, seed=seed)
     for k, zz in enumerate((z0 + 0.065, z1 - 0.065)):
-        ring(part, 'Bronze', c, zz, r, [(x + 0.07, y) for x, y in rrect(0.13, 0.13, 0.05)], name='cuff_rim', nu=128,
+        ring(part, 'Silver', c, zz, r, [(x + 0.07, y) for x, y in rrect(0.13, 0.13, 0.05)], name='cuff_rim', nu=128,
              dent=0.008, wave=0.012, seed=seed + 3 + k)
     import random
     rnd = random.Random(seed)
     for k in range(12):
-        stud(part, 'Bronze', c, r, (z0 + z1) / 2 + rnd.uniform(-0.02, 0.02), k * 30 + 15 + rnd.uniform(-4, 4),
+        stud(part, 'Silver', c, r, (z0 + z1) / 2 + rnd.uniform(-0.02, 0.02), k * 30 + 15 + rnd.uniform(-4, 4),
              r=0.055 * rnd.uniform(0.85, 1.1), lift=0.07)
 
 
@@ -400,7 +449,7 @@ def elbow_spike(part, parts, c, zc):
              nu=96, dent=0.004, wave=0.008, seed=40 + k)
     for u, v in ((0.12, 0.3), (0.88, 0.3), (0.12, -0.3), (0.88, -0.3)):
         q, n = on_plate(u, v)
-        domed_stud(part, 'Bronze', q, n, 0.05)
+        domed_stud(part, 'Silver', q, n, 0.05)
 
     # the spike: a diamond section with bevelled edges, tall and narrow like a blade on edge, tapering to a point
     root, n = on_plate(0.38, 0.0)
@@ -442,7 +491,7 @@ def belt():
              nu=160, dent=0.006, wave=0.02, seed=int(z0 * 100))
         if name == 'belt':
             for k in range(16):
-                stud('Torso', 'Bronze', c, r, 3.78, k * 22.5 + 11.25, r=0.06, lift=0.09)
+                stud('Torso', 'Silver', c, r, 3.78, k * 22.5 + 11.25, r=0.06, lift=0.09)
             fy = -max(r[nu * 3 // 4 - 2: nu * 3 // 4 + 3]) - 0.09
     boss('Torso', (0.0, fy, 3.95), (0, -1, 0))
 
@@ -488,7 +537,7 @@ def loincloth():
 
 def hip_strips():
     """thick leather strips hanging from under the belt over each thigh's outside, rounded at their edges and
-    curving with the thigh, each tipped with a bronze cap and stud"""
+    curving with the thigh, each tipped with a silver cap and stud"""
     for k, deg in enumerate((-75, -45, -15, 15, 45)):
         t = math.radians(deg)
         dirn = Vector((math.cos(t), math.sin(t), 0))
@@ -517,7 +566,7 @@ def hip_strips():
         surface('LeftLeg', 'Leather', fn, [i / 24 for i in range(25)], list(range(len(sec) + 1)), closed_v=True,
                 out=lambda p: (LEG_C[0], LEG_C[1], p[2]), name='strip')
         tip_r = surf(['LeftLeg'], LEG_C, t, z0 + 0.15) + lift + 0.03
-        domed_stud('LeftLeg', 'Bronze', tuple(Vector((LEG_C[0], LEG_C[1], z0 + 0.16)) + dirn * tip_r), tuple(dirn), 0.06)
+        domed_stud('LeftLeg', 'Silver', tuple(Vector((LEG_C[0], LEG_C[1], z0 + 0.16)) + dirn * tip_r), tuple(dirn), 0.06)
 
 
 def clamp(x, a=0.0, b=1.0):
@@ -749,6 +798,139 @@ def gear():
     loincloth()
 
 
+def head_assets():
+    """the head, three ways: the full sculpt (Brute_Head_High, painted), the game mesh cast from its forms on a
+    leaner grid (Brute_Head), and the glowing eyes (Brute_Eyes). The sculpt's detail, colour and roughness are
+    baked onto the game mesh"""
+    import head as HD
+    Gh = HD.grid(400, 300)
+    hi = HD.build(Gh, K, tuple(HEAD), 'Brute_Head_High')
+    col, rough = HD.paint(Gh, SKIN)
+    c = np.concatenate([col.reshape(-1, 3), [col[:, 0].mean(0), col[:, -1].mean(0)]])
+    r = np.concatenate([rough.reshape(-1), [rough[:, 0].mean(), rough[:, -1].mean()]])
+    me = hi.data
+    ca = me.color_attributes.new('Col', 'FLOAT_COLOR', 'POINT')
+    ca.data.foreach_set('color', np.concatenate([c, np.ones((len(c), 1))], 1).astype(np.float32).ravel())
+    ra = me.attributes.new('Rough', 'FLOAT', 'POINT')
+    ra.data.foreach_set('value', r.astype(np.float32))
+    lo = HD.build(HD.low_grid(), K, tuple(HEAD), 'Brute_Head', upto=len(HD.FORMS))
+    eyes = HD.eyes(K, tuple(HEAD))
+    eyes.data.materials.append(glow_material())
+    print('head tris: sculpt', sum(len(p.vertices) - 2 for p in me.polygons), 'game',
+          sum(len(p.vertices) - 2 for p in lo.data.polygons), 'eyes', sum(len(p.vertices) - 2 for p in eyes.data.polygons),
+          flush=True)
+    maps = bake_head(lo, hi)
+    m = bpy.data.materials.new('Brute_Head')
+    m.use_nodes = True
+    nt = m.node_tree
+    b = nt.nodes['Principled BSDF']
+    tex = {}
+    for ch, img in maps.items():
+        t = nt.nodes.new('ShaderNodeTexImage')
+        t.image = img
+        tex[ch] = t
+    nt.links.new(tex['Color'].outputs[0], b.inputs['Base Color'])
+    nt.links.new(tex['Roughness'].outputs[0], b.inputs['Roughness'])
+    nm = nt.nodes.new('ShaderNodeNormalMap')
+    nt.links.new(tex['Normal'].outputs[0], nm.inputs['Color'])
+    nt.links.new(nm.outputs[0], b.inputs['Normal'])
+    b.inputs['Specular IOR Level'].default_value = 0.3
+    lo.data.materials.clear()
+    lo.data.materials.append(m)
+    hi.hide_render = True
+    return lo, eyes, hi
+
+
+def game_head():
+    """the game head and eyes with the maps already baked (head_assets() bakes them if they aren't there yet)"""
+    import head as HD
+    paths = {ch: os.path.join(OUT, 'Brute_Head_' + ch + '.png') for ch in ('Color', 'Roughness', 'Normal')}
+    if not all(os.path.exists(f) for f in paths.values()):
+        lo, eyes, hi = head_assets()
+        bpy.data.objects.remove(hi)
+        return lo, eyes
+    lo = HD.build(HD.low_grid(), K, tuple(HEAD), 'Brute_Head', upto=len(HD.FORMS))
+    eyes = HD.eyes(K, tuple(HEAD))
+    eyes.data.materials.append(glow_material())
+    m = bpy.data.materials.new('Brute_Head')
+    m.use_nodes = True
+    nt = m.node_tree
+    b = nt.nodes['Principled BSDF']
+    tex = {}
+    for ch, f in paths.items():
+        t = nt.nodes.new('ShaderNodeTexImage')
+        t.image = bpy.data.images.load(f)
+        if ch != 'Color':
+            t.image.colorspace_settings.name = 'Non-Color'
+        tex[ch] = t
+    nt.links.new(tex['Color'].outputs[0], b.inputs['Base Color'])
+    nt.links.new(tex['Roughness'].outputs[0], b.inputs['Roughness'])
+    nm = nt.nodes.new('ShaderNodeNormalMap')
+    nt.links.new(tex['Normal'].outputs[0], nm.inputs['Color'])
+    nt.links.new(nm.outputs[0], b.inputs['Normal'])
+    b.inputs['Specular IOR Level'].default_value = 0.3
+    lo.data.materials.append(m)
+    return lo, eyes
+
+
+def bake_head(lo, hi, res=1024):
+    """the sculpt onto the game mesh: its normals, and its painted colour and roughness through an emission pass"""
+    sc = bpy.context.scene
+    sc.render.engine = 'CYCLES'
+    bk = sc.render.bake
+    bk.margin = 8
+    bk.use_clear = True
+    bk.use_selected_to_active = True
+    bk.cage_extrusion = 0.06
+    bk.max_ray_distance = 0.16
+    pm = bpy.data.materials.new('HeadPaint')
+    pm.use_nodes = True
+    nt = pm.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new('ShaderNodeOutputMaterial')
+    em = nt.nodes.new('ShaderNodeEmission')
+    nt.links.new(em.outputs[0], out.inputs['Surface'])
+    src = {}
+    for ch, attr, sock in (('Color', 'Col', 'Color'), ('Roughness', 'Rough', 'Fac')):
+        at = nt.nodes.new('ShaderNodeAttribute')
+        at.attribute_name = attr
+        src[ch] = at.outputs[sock]
+    hi.data.materials.clear()
+    hi.data.materials.append(pm)
+    tm = bpy.data.materials.new('HeadTarget')
+    tm.use_nodes = True
+    tnode = tm.node_tree.nodes.new('ShaderNodeTexImage')
+    tm.node_tree.nodes.active = tnode
+    lo.data.materials.clear()
+    lo.data.materials.append(tm)
+    for o in bpy.data.objects:
+        o.select_set(False)
+    hi.select_set(True)
+    lo.select_set(True)
+    bpy.context.view_layer.objects.active = lo
+    maps = {}
+    os.makedirs(OUT, exist_ok=True)
+    for ch in ('Color', 'Roughness', 'Normal'):
+        img = bpy.data.images.new('Brute_Head_' + ch, res, res, alpha=False)
+        img.colorspace_settings.name = 'sRGB' if ch == 'Color' else 'Non-Color'
+        tnode.image = img
+        if ch == 'Normal':
+            sc.cycles.samples = 8
+            bpy.ops.object.bake(type='NORMAL', normal_space='TANGENT', margin=8, use_selected_to_active=True)
+        else:
+            nt.links.new(src[ch], em.inputs['Color'])
+            sc.cycles.samples = 4
+            bpy.ops.object.bake(type='EMIT', margin=8, use_selected_to_active=True)
+        img.filepath_raw = os.path.join(OUT, 'Brute_Head_' + ch + '.png')
+        img.file_format = 'PNG'
+        img.save()
+        maps[ch] = img
+        print('BAKED', img.name, flush=True)
+    hi.select_set(False)
+    lo.select_set(False)
+    return maps
+
+
 def glow_material():
     """the eyes: a flat glowing red (Neon in Studio)"""
     m = bpy.data.materials.new('Glow')
@@ -761,12 +943,13 @@ def glow_material():
 
 
 def gear_materials():
-    """worn, battle-used materials: pitted and rusting iron, bronze dark with patina and green in its grooves,
+    """worn, battle-used materials: pitted, rusting, scratched and grimy iron, silver tarnished black in its grooves
+    and rubbed bright on its edges,
     scuffed and cracked leather, stained cloth. Each exposes OUT_COL / OUT_ROUGH / OUT_METAL for baking"""
-    for name, kind in (('Iron', 'iron'), ('Bronze', 'bronze'), ('Leather', 'leather'), ('Cloth', 'cloth'),
+    for name, kind in (('Iron', 'iron'), ('Silver', 'silver'), ('Leather', 'leather'), ('Cloth', 'cloth'),
                        ('Hair', 'hair')):
         worn_material(name, kind)
-    MATS['Steel'] = MATS['Bronze']
+    MATS['Steel'] = MATS['Silver']
 
 
 def worn_material(name, kind):
@@ -844,26 +1027,57 @@ def worn_material(name, kind):
     ao.samples = 16
     crev = rng(ao.outputs['AO'], 0.95, 0.4)                         # the grooves and crevices
     blot = rng(noise(2.5, 6, 0.65), 0.45, 0.7)                      # patches of wear and grime
+    def wave(scale, rot):
+        mp = N.new('ShaderNodeMapping')
+        mp.inputs['Rotation'].default_value = rot
+        L.new(tc.outputs['Object'], mp.inputs['Vector'])
+        w = N.new('ShaderNodeTexWave')
+        w.inputs['Scale'].default_value = scale
+        w.inputs['Distortion'].default_value = 3.0
+        w.inputs['Detail'].default_value = 2.0
+        L.new(mp.outputs[0], w.inputs['Vector'])
+        return w.outputs['Fac']
+
+    def streaks(scale):
+        mp = N.new('ShaderNodeMapping')
+        mp.inputs['Scale'].default_value = (scale, scale, scale * 0.08)
+        L.new(tc.outputs['Object'], mp.inputs['Vector'])
+        return noise(1.0, 6, 0.6, mp.outputs[0])
+
+    # scratches: thin bright lines in two directions, broken into short runs
+    scratch = op('MAXIMUM', op('MULTIPLY', rng(wave(22, (0.4, 0.9, 0.2)), 0.95, 0.995), rng(noise(5), 0.52, 0.6)),
+                 op('MULTIPLY', rng(wave(30, (1.2, 0.3, 1.0)), 0.95, 0.995), rng(noise(7), 0.56, 0.62)))
+    grime = op('MAXIMUM', op('MULTIPLY', crev, 0.95), op('MULTIPLY', rng(noise(3.5, 6, 0.6), 0.5, 0.68), 0.7))
+    blood = op('MULTIPLY', rng(vor(45, 'F1', 'Distance'), 0.0, 0.12, 1.0, 0.0), rng(noise(2.0, 4), 0.58, 0.64))
     if kind == 'iron':
-        rust = op('MAXIMUM', op('MULTIPLY', crev, 0.9), op('MULTIPLY', rng(noise(4.0, 8, 0.7), 0.55, 0.72), 0.8))
+        rust = op('MAXIMUM', op('MULTIPLY', crev, 0.95), op('MULTIPLY', rng(noise(2.0, 8, 0.7), 0.6, 0.74), 0.9))
+        rust = op('MAXIMUM', rust, op('MULTIPLY', rng(streaks(9), 0.63, 0.75), 0.6))       # run down in streaks
         pits = rng(vor(90), 0.0, 0.25, 1.0, 0.0)
-        col = mix(rng(noise(12, 4), 0.3, 0.7, 0, 0.3), lin('#262628'), lin('#3a393c'))
-        col = mix(rust, col, mix(rng(noise(30, 3), 0.4, 0.6), lin('#4a2412'), lin('#7a3c18')))
-        col = mix(op('MULTIPLY', edge, 0.85), col, lin('#9a9894'))
-        col = mix(op('MULTIPLY', pits, 0.5), col, lin('#141212'))
-        rough = op('ADD', 0.38, op('ADD', op('MULTIPLY', rust, 0.5), op('MULTIPLY', edge, -0.15)))
-        metal = op('SUBTRACT', 1.0, op('MULTIPLY', rust, 0.8))
-        height = op('ADD', op('MULTIPLY', pits, -0.6), op('MULTIPLY', noise(25, 6), 0.3))
-    elif kind == 'bronze':
-        patina = op('MAXIMUM', op('MULTIPLY', crev, 0.95), op('MULTIPLY', blot, 0.55))
-        verd = op('MULTIPLY', rng(ao.outputs['AO'], 0.7, 0.35), rng(noise(6, 5), 0.5, 0.65))
-        col = mix(rng(noise(10, 4), 0.3, 0.7, 0, 0.4), lin('#7a5226'), lin('#93652f'))
-        col = mix(patina, col, lin('#2e2012'))
-        col = mix(verd, col, lin('#3d6656'))
-        col = mix(op('MULTIPLY', edge, 0.9), col, lin('#d19a52'))
-        rough = op('ADD', 0.3, op('ADD', op('MULTIPLY', patina, 0.45), op('MULTIPLY', edge, -0.12)))
-        metal = op('SUBTRACT', 1.0, op('MULTIPLY', op('MAXIMUM', patina, verd), 0.7))
-        height = op('ADD', op('MULTIPLY', noise(30, 6), 0.4), op('MULTIPLY', rng(vor(60), 0.0, 0.2, 1.0, 0.0), -0.3))
+        col = mix(rng(noise(12, 4), 0.3, 0.7, 0, 0.3), lin('#222224'), lin('#333236'))
+        col = mix(rust, col, mix(rng(noise(30, 3), 0.4, 0.6), lin('#3e1d0f'), lin('#6e3416')))
+        col = mix(op('MULTIPLY', grime, 0.75), col, lin('#100e0d'))
+        col = mix(op('MULTIPLY', edge, 0.8), col, lin('#8e8c88'))
+        col = mix(op('MULTIPLY', scratch, 0.8), col, lin('#9c9a96'))
+        col = mix(op('MULTIPLY', pits, 0.55), col, lin('#120f0e'))
+        col = mix(op('MULTIPLY', blood, 0.8), col, lin('#2a0805'))
+        rough = op('ADD', 0.55, op('ADD', op('MULTIPLY', rust, 0.4), op('MULTIPLY', op('ADD', edge, scratch), -0.2)))
+        metal = op('SUBTRACT', 1.0, op('MULTIPLY', op('MAXIMUM', rust, grime), 0.85))
+        height = op('ADD', op('MULTIPLY', pits, -0.6), op('ADD', op('MULTIPLY', noise(25, 6), 0.3),
+                                                          op('MULTIPLY', scratch, -0.5)))
+    elif kind == 'silver':
+        tarnish = op('MAXIMUM', op('MULTIPLY', crev, 1.0), op('MULTIPLY', blot, 0.6))
+        film = rng(noise(5, 5), 0.5, 0.66)                                           # a dull yellowish film
+        col = mix(rng(noise(10, 4), 0.3, 0.7, 0, 0.4), lin('#8d8d90'), lin('#a3a3a6'))
+        col = mix(op('MULTIPLY', film, 0.4), col, lin('#6e6656'))
+        col = mix(tarnish, col, lin('#1c1b1d'))
+        col = mix(op('MULTIPLY', grime, 0.6), col, lin('#0e0d0c'))
+        col = mix(op('MULTIPLY', edge, 0.9), col, lin('#d8d8da'))
+        col = mix(op('MULTIPLY', scratch, 0.7), col, lin('#e0e0e2'))
+        col = mix(op('MULTIPLY', blood, 0.7), col, lin('#2a0805'))
+        rough = op('ADD', 0.34, op('ADD', op('MULTIPLY', tarnish, 0.4), op('MULTIPLY', op('ADD', edge, scratch), -0.15)))
+        metal = op('SUBTRACT', 1.0, op('MULTIPLY', op('MAXIMUM', tarnish, grime), 0.5))
+        height = op('ADD', op('MULTIPLY', noise(30, 6), 0.35), op('ADD', op('MULTIPLY', rng(vor(60), 0.0, 0.2, 1.0, 0.0), -0.3),
+                                                                     op('MULTIPLY', scratch, -0.5)))
     elif kind == 'leather':
         cracks = rng(vor(28, 'DISTANCE_TO_EDGE'), 0.0, 0.03, 1.0, 0.0)
         grain = noise(80, 6, 0.7)
@@ -871,7 +1085,10 @@ def worn_material(name, kind):
         col = mix(op('MULTIPLY', blot, 0.6), col, lin('#4f3a2a'))                 # scuffed and faded
         col = mix(op('MULTIPLY', edge, 0.8), col, lin('#6b5240'))
         col = mix(op('MULTIPLY', op('MAXIMUM', crev, cracks), 0.7), col, lin('#0e0806'))
-        rough = op('ADD', 0.6, op('ADD', op('MULTIPLY', blot, 0.15), op('MULTIPLY', edge, -0.1)))
+        col = mix(op('MULTIPLY', scratch, 0.6), col, lin('#7a604c'))                # cut and scraped
+        col = mix(op('MULTIPLY', grime, 0.5), col, lin('#0c0806'))
+        col = mix(op('MULTIPLY', blood, 0.7), col, lin('#200604'))
+        rough = op('ADD', 0.7, op('ADD', op('MULTIPLY', blot, 0.15), op('MULTIPLY', edge, -0.08)))
         metal = 0.0
         height = op('ADD', op('MULTIPLY', grain, 0.4), op('MULTIPLY', cracks, -0.8))
     elif kind == 'cloth':
@@ -885,6 +1102,7 @@ def worn_material(name, kind):
         col = mix(op('MULTIPLY', blot, 0.45), col, lin('#6e3a33'))                 # faded patches
         col = mix(op('MULTIPLY', grime, 0.85), col, lin('#241a14'))                # dirt up from the hem
         col = mix(op('MULTIPLY', weave.outputs['Fac'], 0.12), col, lin('#1a0c0b'))
+        col = mix(op('MULTIPLY', blood, 0.6), col, lin('#1e0605'))
         rough = op('ADD', 0.82, op('MULTIPLY', grime, 0.1))
         metal = 0.0
         height = op('ADD', op('MULTIPLY', weave.outputs['Fac'], 0.5), op('MULTIPLY', noise(8, 6), 0.4))
@@ -939,7 +1157,7 @@ def snapshot(name, objs, wire=True, target=(0, 0, 4.2), dist=27):
     for o in sc.objects:     # the studio is set up for an R6-sized figure: move its lights out to suit this one
         if o.type == 'LIGHT':
             o.location = Vector(o.location) * 2.2
-            o.data.energy *= 4.0
+            o.data.energy *= 1.8
             o.data.size *= 2.0
             o.rotation_euler = (Vector(target) - o.location).to_track_quat('-Z', 'Y').to_euler()
     extra = []
@@ -1003,7 +1221,7 @@ def head_snap(name, label):
         for o in sc.objects:
             if o.type == 'LIGHT':
                 o.location = Vector(o.location) * 1.6 + Vector((0, 0, 4))
-                o.data.energy *= 2.5
+                o.data.energy *= 1.4
                 o.rotation_euler = (HEAD - o.location).to_track_quat('-Z', 'Y').to_euler()
     cam = sc.camera
     sc.cycles.samples = 16
@@ -1094,6 +1312,40 @@ def main():
             print('STEP', k, HD.step_name(k), flush=True)
         contact(frames, 'step_04_head')
         print('tris', sum(len(p.vertices) - 2 for p in hi.data.polygons), flush=True)
+        return
+    if STAGE == 'headbake':
+        lo, eyes, hi = head_assets()
+        for o, _ in body.values():
+            o.hide_render = True
+        f1 = head_snap('baked', 'the game head: ' + str(sum(len(p.vertices) - 2 for p in lo.data.polygons))
+                       + ' triangles, the sculpt baked onto it, the eyes glowing')
+        w = lo.copy()
+        w.data = lo.data.copy()
+        bpy.context.scene.collection.objects.link(w)
+        md = w.modifiers.new('w', 'WIREFRAME')
+        md.thickness = 0.006
+        md.use_replace = True
+        black = bpy.data.materials.new('Wire')
+        black.diffuse_color = (0.02, 0.02, 0.02, 1)
+        w.data.materials.clear()
+        w.data.materials.append(black)
+        f2 = head_snap('wire', 'its topology')
+        from PIL import Image
+        ims = [Image.open(f) for f in (f1, f2)]
+        sheet = Image.new('RGB', (ims[0].width, ims[0].height * 2))
+        for k, im in enumerate(ims):
+            sheet.paste(im, (0, ims[0].height * k))
+        sheet.save(os.path.join(STEPS, 'step_06_head_game.png'))
+        for f in (f1, f2):
+            os.remove(f)
+        print('STEP', os.path.join(STEPS, 'step_06_head_game.png'), flush=True)
+        bpy.data.objects.remove(w)
+        for o in bpy.data.objects:
+            o.select_set(o in (lo, eyes))
+        bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'Brute_Head.fbx'), use_selection=True,
+                                 object_types={'MESH'}, apply_scale_options='FBX_SCALE_ALL', mesh_smooth_type='FACE',
+                                 use_tspace=True, path_mode='STRIP')
+        print('EXPORTED', os.path.join(OUT, 'Brute_Head.fbx'), flush=True)
         return
     body_bvh(body)
     gear_materials()

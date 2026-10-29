@@ -224,33 +224,42 @@ def teeth(P, M):
         n = np.array([s, -1, 0]) / math.hypot(1, s)
         c = np.array([xc, arch(xc) + 0.03, Z_M - 0.005 - h / 2]) - n * 0.026
         d = np.minimum(d, rbox(M, c, (w / 2 - 0.003, 0.026, h / 2), 0.013, np.stack([t, -n, (0, 0, 1)], 1)))
-    # the gums above and below them
-    gx = np.linspace(0, 0.26, 8)
-    d = np.minimum(d, tube(M, [(x, arch(x) + 0.05, Z_M + 0.12, 0.044) for x in gx]))
-    d = np.minimum(d, tube(M, [(x, arch(x) + 0.08, Z_M - 0.11, 0.044) for x in gx]))
     return d
 
 
-@form('the mouth: the lips drawn back off clenched teeth')
-def _mouth(P, M, d):
+def gums(M):
+    gx = np.linspace(0, 0.26, 8)
+    return np.minimum(tube(M, [(x, arch(x) + 0.05, Z_M + 0.12, 0.044) for x in gx]),
+                      tube(M, [(x, arch(x) + 0.08, Z_M - 0.11, 0.044) for x in gx]))
+
+
+def mouth_hole(M):
+    """the opening between the lips, carved back to behind the teeth"""
     x, y, z = M[..., 0], M[..., 1], M[..., 2]
     up, lo = lip_lift(x)
     zm = mouth_line(x)
     opening = np.maximum(z - (zm + up), (zm - lo) - z)
     opening = np.maximum(opening, (x - X_M) * 0.5)
-    hole = np.maximum(opening, y - (arch(np.minimum(x, X_M)) + 0.1))
-    d = carve(d, hole, 0.012)
-    d = np.minimum(d, teeth(P, M))
+    return np.maximum(opening, y - (arch(np.minimum(x, X_M)) + 0.1))
+
+
+def lips(M):
+    """the upper and lower lips: tubes along the opening's edges, thinning toward the corners"""
     xs = np.linspace(0, X_M + 0.01, 9)
     u_, l_ = lip_lift(xs)
     zs = mouth_line(xs)
     ru = 0.026 - 0.012 * (xs / X_M) ** 2
     rl = 0.034 - 0.017 * (xs / X_M) ** 2
-    d = add(d, tube(M, [(xx, arch(xx) - 0.032, zz + uu + r * 0.55, r) for xx, zz, uu, r in zip(xs, zs, u_, ru)], 24),
-            0.025)
-    d = add(d, tube(M, [(xx, arch(xx) - 0.022, zz - ll - r * 0.5, r) for xx, zz, ll, r in zip(xs, zs, l_, rl)], 24),
-            0.025)
-    return d
+    return (tube(M, [(xx, arch(xx) - 0.032, zz + uu + r * 0.55, r) for xx, zz, uu, r in zip(xs, zs, u_, ru)], 24),
+            tube(M, [(xx, arch(xx) - 0.022, zz - ll - r * 0.5, r) for xx, zz, ll, r in zip(xs, zs, l_, rl)], 24))
+
+
+@form('the mouth: the lips drawn back off clenched teeth')
+def _mouth(P, M, d):
+    d = carve(d, mouth_hole(M), 0.012)
+    d = np.minimum(d, np.minimum(teeth(P, M), gums(M)))
+    upper, lower = lips(M)
+    return add(add(d, upper, 0.025), lower, 0.025)
 
 
 def almond(qx):
@@ -407,6 +416,19 @@ def origin(D):
     return np.stack([np.zeros(D.shape[:-1]), np.zeros(D.shape[:-1]), 0.7 * D[..., 2]], -1)
 
 
+def low_grid(nu=64, nv=52):
+    """the game mesh's ray directions: the same layout, far fewer of them, crowded hardest through the eyes (so the
+    openings round the glowing eyeballs stay clean), the nose and the mouth"""
+    eye = math.degrees(math.asin(EYE[0]))
+    th = np.radians(spaced(nu, -270, 90, lambda t: 1 + 5 * np.exp(-((t + 90) / 30) ** 2)
+                           + 4 * (np.exp(-((t + 90 - eye) / 10) ** 2) + np.exp(-((t + 90 + eye) / 10) ** 2)), True))
+    ph = np.radians(spaced(nv + 1, -89, 89, lambda p: 1 + 9 * np.exp(-((p - 4.5) / 4) ** 2)
+                           + 7 * np.exp(-((p + 14.5) / 5) ** 2) + 2 * np.exp(-(p / 14) ** 2), False))
+    TH, PH = np.meshgrid(th, ph, indexing='ij')
+    D = np.stack([np.cos(TH) * np.cos(PH), np.sin(TH) * np.cos(PH), np.sin(PH)], -1)
+    return dict(D=D, nu=nu, nv=nv)
+
+
 def cast(D, upto=None, r_max=2.2):
     """where each ray leaves the head (its outermost crossing)"""
     shape = D.shape[:-1]
@@ -526,3 +548,100 @@ def eyes(scale, centre, name='Brute_Eyes'):
     ob = bpy.data.objects.new(name, me)
     bpy.context.scene.collection.objects.link(ob)
     return ob
+
+
+# ------------------------------------------------------------------ paint (on the sculpt, to bake onto the game mesh)
+
+def hexlin(h):
+    c = np.array([int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)])
+    return np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+
+
+def plasma(P, scale, seed, octaves=4):
+    """smooth 3D noise in -1..1: sine waves in random directions, finer and fainter octave by octave"""
+    rng = np.random.default_rng(seed)
+    v = np.zeros(P.shape[:-1])
+    for o in range(octaves):
+        for _ in range(3):
+            d = rng.normal(size=3)
+            d /= np.linalg.norm(d)
+            v += np.sin((P @ d) * scale * 2 ** o * math.tau + rng.uniform(0, math.tau)) / 2 ** o
+    return v / (np.abs(v).max() + 1e-9)
+
+
+def paint(G, skin):
+    """the head's colour (linear RGB) and roughness at each point of the sculpt's grid (G['P'], from points()):
+    the body's skin tones, darkened in the creases and lit on the ridges, then the lips, teeth, gums and the dark
+    of the mouth, shadowed lids, thick brows, stubble, the scars, grime and dried blood"""
+    P = G['P']
+    M = P.copy()
+    M[..., 0] = np.abs(M[..., 0])
+    N = normals(P)
+    # curvature, from the grid itself (each point against its neighbours' average, along the normal)
+    nb = (np.roll(P, 1, 0) + np.roll(P, -1, 0) + np.pad(P, ((0, 0), (1, 1), (0, 0)), mode='edge')[:, :-2]
+          + np.pad(P, ((0, 0), (1, 1), (0, 0)), mode='edge')[:, 2:]) / 4
+    h = (length(np.roll(P, 1, 0) - P) + length(np.roll(P, -1, 0) - P)) / 2 + 1e-4
+    curv = ((nb - P) * N).sum(-1) / (h * h) * 0.004
+    curv = np.clip(curv, -1, 1)
+    # occlusion: how much the head closes in round each point (the classic signed-distance trick)
+    occ = np.zeros(P.shape[:-1])
+    for dd in (0.015, 0.035, 0.07):
+        occ += np.clip(1 - sdf(P + N * dd) / dd, 0, 1) / 3
+    X, Z = P[..., 0], P[..., 2]
+    front = np.clip((-P[..., 1] / np.maximum(np.hypot(P[..., 0], P[..., 1]), 1e-6) - 0.2) / 0.4, 0, 1)
+    mott = plasma(P, 2.5, 1)
+    fine = plasma(P, 14, 2, 3)
+
+    col = np.broadcast_to(hexlin(skin['base']), P.shape).copy()
+    rough = np.full(P.shape[:-1], 0.8)
+
+    def put(mask, colour, k=1.0, r=None):
+        nonlocal col, rough
+        m = np.clip(mask, 0, 1) * k
+        col = col * (1 - m[..., None]) + hexlin(colour) * m[..., None]
+        if r is not None:
+            rough = rough * (1 - m) + r * m
+
+    put(np.clip(mott, 0, 1), skin['warm'], 0.2)
+    put(np.clip(curv * 1.5, 0, 1), skin['crease'], 0.55)
+    put(np.clip(-curv * 1.2, 0, 1), skin['ridge'], 0.35, 0.74)
+    col *= (1 + 0.05 * fine)[..., None]
+    put(np.clip(occ * 1.6 - 0.3, 0, 1), '#1d1917', 0.45)                      # grime in the deep places
+    # around the eyes: shadowed lids, and the glow's red catching the rims of the openings
+    q = M - EYE_C
+    near_eye = np.exp(-((q[..., 0] / 0.2) ** 2 + (q[..., 2] / 0.12) ** 2))
+    put(near_eye * front, '#2a2422', 0.45)
+    rim = np.exp(-((length(q) - EYE_R - 0.02) / 0.012) ** 2) * np.exp(-((q[..., 0] / 0.16) ** 2 + (q[..., 2] / 0.07) ** 2))
+    put(rim, '#6a1d14', 0.55)
+    # brows: thick, dark, the hairs swept outward
+    for side in (1, -1):
+        dd, a = seg_dist(X * side, Z, [(0.05, 0.255), (0.18, 0.3), (0.4, 0.36), (0.62, 0.33)])
+        band = np.clip((0.04 * (0.7 + 0.3 * np.sin(np.pi * np.clip(a, 0, 1))) - dd) / 0.012, 0, 1) * ends(a, 0.12)
+        hairs = 0.5 + 0.5 * np.sin((Z - 0.55 * a * 0.4 + 0.12 * X * side) * 260 + 6 * plasma(P, 6, 3 + side, 2))
+        put(band * (0.45 + 0.55 * hairs) * front, '#141110', 0.9, 0.86)
+    # stubble over the jaw, the chin and the upper lip
+    jaw = np.clip((-0.2 - Z) / 0.08, 0, 1) * np.clip((0.75 - np.abs(X)) / 0.15, 0, 1) * front
+    dots = np.clip((plasma(P, 90, 5, 2) - 0.15) / 0.3, 0, 1)
+    put(jaw * (0.35 + 0.45 * dots), '#252120', 0.55)
+    # lips, teeth, gums and the dark inside of the mouth
+    upper, lower = lips(M)
+    lip = np.clip((0.012 - np.minimum(upper, lower)) / 0.012, 0, 1)
+    put(lip, '#4a302d', 0.75, 0.6)
+    inside = np.clip((0.004 - mouth_hole(M)) / 0.01, 0, 1)
+    put(inside, '#140806', 1.0, 0.7)
+    put(np.clip((0.006 - gums(M)) / 0.006, 0, 1), '#4e1f1b', 1.0, 0.5)
+    tooth = np.clip((0.004 - teeth(P, M)) / 0.004, 0, 1)
+    stain = np.clip(plasma(P, 30, 6, 2) * 0.5 + 0.5, 0, 1)
+    tcol = hexlin('#b9ad90') * (1 - 0.25 * stain[..., None]) + hexlin('#6b5a3c') * 0.25 * stain[..., None]
+    col = col * (1 - tooth[..., None]) + tcol * tooth[..., None]
+    rough = rough * (1 - tooth) + 0.42 * tooth
+    put(tooth * np.clip(occ * 2.2 - 0.6, 0, 1), '#1a120c', 0.8)               # grime between them
+    # scars (paler, on the brow and the cheek), and dried blood from the brow's down past the eye
+    for pts in ([(0.2, 0.66), (0.29, 0.44), (0.36, 0.3)], [(0.5, 0.02), (0.58, -0.14), (0.64, -0.3)]):
+        dd, a = seg_dist(X, Z, pts)
+        put(np.exp(-(dd / 0.014) ** 2) * ends(a) * front, '#7e6c64', 0.6, 0.65)
+    trickle, a = seg_dist(X, Z, [(0.37, 0.31), (0.39, 0.24), (0.47, 0.2), (0.5, 0.08), (0.52, -0.02)])
+    put(np.exp(-(trickle / (0.012 * (1 - 0.6 * a))) ** 2) * front * 0.85, '#300a07', 1.0, 0.62)
+    spray = np.clip((plasma(P, 40, 7, 2) - 0.55) / 0.2, 0, 1) * np.exp(-(((X + 0.5) / 0.18) ** 2 + ((Z + 0.15) / 0.2) ** 2))
+    put(spray * front, '#2c0907', 0.85, 0.62)
+    return col, np.clip(rough, 0.3, 0.95)
