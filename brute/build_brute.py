@@ -343,6 +343,96 @@ def cuff(part, parts, c, z0, z1):
              r=0.055 * rnd.uniform(0.85, 1.1), lift=0.07)
 
 
+ELBOW_Z = 5.25             # the elbow's point, on the back of the arm (from the muscle normal map)
+
+
+def elbow_spike(part, parts, c, zc):
+    """a forged iron guard cupped over the back of the elbow, strapped on, and a long edged spike swept back and down
+    off it out of a domed collar"""
+    import random
+    rnd = random.Random(int(zc * 100))
+    r = girth(parts, c, zc - 0.36, zc + 0.36, 72, 0.015, smooth=1)
+    nr = len(r)
+
+    def rad(t):
+        x = (t % TAU) / TAU * nr
+        k = int(x) % nr
+        f = x - int(x)
+        return r[k] * (1 - f) + r[(k + 1) % nr] * f
+
+    a0, a1 = math.radians(38), math.radians(142)       # round the back of the arm (90 = straight back)
+    H, T = 0.4, 0.05                                    # the plate's half height and thickness
+    prof = [(x + T / 2, y / H) for x, y in rrect(T, 2 * H, 0.022, 3)]
+
+    def cup(u, v):
+        """how far the plate bulges out over the point of the elbow (u round it, v up it, both 0 at the middle)"""
+        return 0.07 * math.cos(min(abs(u), 1) * math.pi / 2) ** 1.5 * math.cos(min(abs(v), 1) * math.pi / 2)
+
+    def plate(u, j):
+        t = a0 + (a1 - a0) * u
+        uu = 2 * u - 1
+        dr, dz = prof[j % len(prof)]
+        cr = 0.3                                        # its corners rounded off
+        e = math.sqrt(max(0.0, 1 - ((abs(uu) - (1 - cr)) / cr) ** 2)) if abs(uu) > 1 - cr else 1.0
+        hz = dz * H * e
+        rr = rad(t) + dr * (0.35 + 0.65 * e) + cup(uu, hz / H) + wobble(7, u, hz * 6, 4, 0.006)
+        return (c[0] + rr * math.cos(t), c[1] + rr * math.sin(t), zc + hz)
+    surface(part, 'Iron', plate, [0.5 - 0.5 * math.cos(math.pi * i / 48) for i in range(49)],
+            list(range(len(prof) + 1)), closed_v=True,
+            out=lambda q: (c[0], c[1], q[2]), name='elbow_guard')
+
+    def on_plate(u, v):
+        t = a0 + (a1 - a0) * u
+        uu = 2 * u - 1
+        rr = rad(t) + T + cup(uu, v)
+        n = Vector((math.cos(t), math.sin(t), 0))
+        return Vector((c[0], c[1], zc + v * H)) + n * rr, n
+
+    # the straps that hold it on, round the arm above and below the cup
+    for k, v in enumerate((0.62, -0.62)):
+        zz = zc + v * H
+        rs = []
+        for i in range(nr):
+            t = TAU * i / nr
+            on = a0 + 0.08 < t < a1 - 0.08
+            rs.append(r[i] + 0.01 + ((T + cup(2 * (t - a0) / (a1 - a0) - 1, v)) if on else 0.0))
+        ring(part, 'Leather', c, zz, rs, [(x + 0.03, y) for x, y in rrect(0.06, 0.13, 0.025)], name='elbow_strap',
+             nu=96, dent=0.004, wave=0.008, seed=40 + k)
+    for u, v in ((0.12, 0.3), (0.88, 0.3), (0.12, -0.3), (0.88, -0.3)):
+        q, n = on_plate(u, v)
+        domed_stud(part, 'Bronze', q, n, 0.05)
+
+    # the spike: a diamond section with bevelled edges, tall and narrow like a blade on edge, tapering to a point
+    root, n = on_plate(0.38, 0.0)
+    d = Vector((0.6, 1.0, -0.32)).normalized()
+    L = 2.6
+
+    def axis(t):     # swept back and down, the tip curling up again like a horn
+        return root - d * 0.08 + d * (L * t) + Vector((0.06, 0, -0.42)) * t * t + Vector((0, 0, 0.36)) * t ** 3
+
+    def tangent(t):
+        return (axis(min(t + 0.01, 1)) - axis(max(t - 0.01, 0))).normalized()
+
+    corners = [(1, 0), (0, 1), (-1, 0), (0, -1)]
+    sec = []
+    for k, (a, b) in enumerate(corners):
+        pa, pb = corners[k - 1], corners[(k + 1) % 4]
+        sec.append((a + (pa[0] - a) * 0.1, b + (pa[1] - b) * 0.1))
+        sec.append((a + (pb[0] - a) * 0.1, b + (pb[1] - b) * 0.1))
+
+    def spike(u, j):
+        tg = tangent(u)
+        up = (Vector((0, 0, 1)) - tg * tg.z).normalized()
+        side = tg.cross(up)
+        w = (1 - u) ** 0.6 * (1 + 0.25 * (1 - u) ** 6)
+        a, b = sec[j % len(sec)]
+        return tuple(axis(u) + up * (a * 0.22 * w) + side * (b * 0.115 * w))
+    us = [(i / 36) ** 1.15 for i in range(37)]
+    surface(part, 'Iron', spike, us, list(range(len(sec) + 1)), closed_v=True,
+            out=lambda q: tuple(axis(0.5)), name='elbow_spike')
+    domed_stud(part, 'Iron', root - d * 0.02, d, 0.27)    # the collar it comes out of
+
+
 def belt():
     nu = 64
     c = (0.0, 0.0)
@@ -651,11 +741,23 @@ def ref_head():
 def gear():
     A.PIECES.clear()
     cuff('LeftArm', ['LeftArm'], ARM_C, 4.12, 4.78)
+    elbow_spike('LeftArm', ['LeftArm'], ARM_C, ELBOW_Z)
     cuff('LeftLeg', ['LeftLeg'], LEG_C, 0.55, 1.15)
     hip_strips()
     A.mirror_left_to_right()
     belt()
     loincloth()
+
+
+def glow_material():
+    """the eyes: a flat glowing red (Neon in Studio)"""
+    m = bpy.data.materials.new('Glow')
+    m.use_nodes = True
+    b = m.node_tree.nodes['Principled BSDF']
+    b.inputs['Base Color'].default_value = (1.0, 0.05, 0.02, 1)
+    b.inputs['Emission Color'].default_value = (1.0, 0.04, 0.01, 1)
+    b.inputs['Emission Strength'].default_value = 6.0
+    return m
 
 
 def gear_materials():
@@ -889,6 +991,76 @@ def snapshot(name, objs, wire=True, target=(0, 0, 4.2), dist=27):
     print('STEP', out.filepath_raw, flush=True)
 
 
+HEAD_DIR = None
+
+
+def head_snap(name, label):
+    """one layer of the sculpt: the head from the front and three-quarter, side by side, its name along the top"""
+    global HEAD_DIR
+    sc = bpy.context.scene
+    if not sc.camera:
+        sc, cam, cam_d = A.studio()
+        for o in sc.objects:
+            if o.type == 'LIGHT':
+                o.location = Vector(o.location) * 1.6 + Vector((0, 0, 4))
+                o.data.energy *= 2.5
+                o.rotation_euler = (HEAD - o.location).to_track_quat('-Z', 'Y').to_euler()
+    cam = sc.camera
+    sc.cycles.samples = 16
+    sc.render.resolution_x = sc.render.resolution_y = 560
+    cam.data.lens = 85
+    HEAD_DIR = os.path.join(STEPS, 'head')
+    os.makedirs(HEAD_DIR, exist_ok=True)
+    shots = []
+    for i, az in enumerate((0, -35)):
+        a = math.radians(az - 90)
+        cam.location = HEAD + Vector((math.cos(a), math.sin(a), 0.06)) * 9.0
+        cam.rotation_euler = (HEAD - cam.location).to_track_quat('-Z', 'Y').to_euler()
+        f = os.path.join(HEAD_DIR, f'_{i}.png')
+        sc.render.filepath = f
+        bpy.ops.render.render(write_still=True)
+        shots.append(f)
+    from PIL import Image, ImageDraw, ImageFont
+    ims = [Image.open(f).convert('RGB') for f in shots]
+    W, H = ims[0].size
+    out = Image.new('RGB', (W * 2, H + 44), (34, 34, 38))
+    for k, im in enumerate(ims):
+        out.paste(im, (k * W, 44))
+    font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 20)
+    ImageDraw.Draw(out).text((14, 11), label, fill=(235, 235, 235), font=font)
+    path = os.path.join(HEAD_DIR, name + '.png')
+    out.save(path)
+    for f in shots:
+        os.remove(f)
+    return path
+
+
+def contact(frames, name):
+    """every layer of the sculpt on one sheet, and as a short video"""
+    import subprocess
+    from PIL import Image
+    ims = [Image.open(f) for f in frames]
+    W, H = ims[0].size
+    cols = 3
+    rows = (len(ims) + cols - 1) // cols
+    sheet = Image.new('RGB', (W * cols // 2, H * rows // 2), (34, 34, 38))
+    for k, im in enumerate(ims):
+        sheet.paste(im.resize((W // 2, H // 2)), ((k % cols) * W // 2, (k // cols) * H // 2))
+    sheet.save(os.path.join(STEPS, name + '.png'))
+    seq = os.path.join(HEAD_DIR, 'seq')
+    os.makedirs(seq, exist_ok=True)
+    n = 0
+    for f in frames:
+        for _ in range(18):            # hold each layer for 0.75 s
+            Image.open(f).save(os.path.join(seq, f'{n:04d}.png'))
+            n += 1
+    subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-framerate', '24', '-i', os.path.join(seq, '%04d.png'),
+                    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '20', os.path.join(STEPS, name + '.mp4')], check=True)
+    import shutil
+    shutil.rmtree(seq)
+    print('STEP', os.path.join(STEPS, name + '.png'), flush=True)
+
+
 def main():
     A.reset()
     body = import_body()
@@ -898,6 +1070,30 @@ def main():
         print(part, 'tris', sum(len(p.vertices) - 2 for p in o.data.polygons), [round(x, 2) for x in o.dimensions])
     if STAGE == 'body':
         snapshot('step_01_body', [o for o, _ in body.values()], wire=False)
+        return
+    if STAGE == 'head':
+        import head as HD
+        G = HD.grid(320, 240)
+        hi = HD.build(G, K, tuple(HEAD), 'Brute_Head_High', upto=1)
+        clay = bpy.data.materials.new('Clay')
+        clay.use_nodes = True
+        cb = clay.node_tree.nodes['Principled BSDF']
+        cb.inputs['Base Color'].default_value = (0.42, 0.4, 0.39, 1)
+        cb.inputs['Roughness'].default_value = 0.6
+        hi.data.materials.append(clay)
+        eyes = HD.eyes(K, tuple(HEAD))
+        eyes.data.materials.append(glow_material())
+        eye_step = 1 + next(i for i, (name, _) in enumerate(HD.FORMS) if name.startswith('the eyes'))
+        for o, _ in body.values():
+            o.hide_render = True
+        frames = []
+        for k in range(1, HD.STEPS + 1):
+            HD.update(hi, G, K, tuple(HEAD), upto=k)
+            eyes.hide_render = k < eye_step
+            frames.append(head_snap(f'head_{k:02d}', HD.step_name(k)))
+            print('STEP', k, HD.step_name(k), flush=True)
+        contact(frames, 'step_04_head')
+        print('tris', sum(len(p.vertices) - 2 for p in hi.data.polygons), flush=True)
         return
     body_bvh(body)
     gear_materials()
