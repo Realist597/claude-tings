@@ -241,7 +241,18 @@ def rrect(w, h, r, n=4):
     return pts
 
 
-def ring(part, mat, c, zc, radii, profile, name='ring', nu=None):
+def wobble(seed, u, v=0.0, n=4, amp=1.0):
+    """smooth irregularity round a loop (u in 0..1, periodic) and across it: a few sine waves with random phases"""
+    import random
+    rnd = random.Random(seed)
+    s_ = 0.0
+    for k in range(n):
+        f = rnd.randint(2, 9 + 4 * k)
+        s_ += math.sin(TAU * f * u + rnd.uniform(0, TAU)) * math.cos(v * rnd.uniform(1, 4) + rnd.uniform(0, TAU)) / (k + 1)
+    return s_ * amp
+
+
+def ring(part, mat, c, zc, radii, profile, name='ring', nu=None, dent=0.0, wave=0.0, seed=0):
     """a band swept round the axis through c: its cross-section the loop `profile` of (out, up) offsets, laid on
     the radius at each angle (radii, from girth) at height zc. Smooth all round: rounded rims, bevelled edges"""
     nr = len(radii)
@@ -255,6 +266,10 @@ def ring(part, mat, c, zc, radii, profile, name='ring', nu=None):
         f = x - int(x)
         r = radii[k] * (1 - f) + radii[(k + 1) % nr] * f
         dr, dz = profile[j % n]
+        if dent:     # hammered dents in its face, more on the outside than the inside
+            dr += wobble(seed, u, dz * 20, 5, dent) * clamp(dr / 0.05)
+        if wave:     # its edges wander up and down
+            dz += wobble(seed + 7, u, 0, 3, wave) * (1 if dz > 0 else -1) * clamp(abs(dz) / 0.05)
         return (c[0] + (r + dr) * math.cos(t), c[1] + (r + dr) * math.sin(t), zc + dz)
     return surface(part, mat, fn, [i / nu for i in range(nu + 1)], list(range(n + 1)), closed_u=True, closed_v=True,
                    out=lambda p: (c[0], c[1], p[2]), name=name)
@@ -316,11 +331,16 @@ def cuff(part, parts, c, z0, z1):
     r = girth(parts, c, z0, z1, 48, 0.05)
     H = z1 - z0
     band = [(x + 0.035, y) for x, y in rrect(0.07, H - 0.16, 0.025)]
-    ring(part, 'Iron', c, (z0 + z1) / 2, r, band, name='cuff')
-    for zz in (z0 + 0.065, z1 - 0.065):
-        ring(part, 'Bronze', c, zz, r, [(x + 0.07, y) for x, y in rrect(0.13, 0.13, 0.05)], name='cuff_rim')
+    seed = int(c[0] * 100 + z0 * 10)
+    ring(part, 'Iron', c, (z0 + z1) / 2, r, band, name='cuff', nu=128, dent=0.012, wave=0.01, seed=seed)
+    for k, zz in enumerate((z0 + 0.065, z1 - 0.065)):
+        ring(part, 'Bronze', c, zz, r, [(x + 0.07, y) for x, y in rrect(0.13, 0.13, 0.05)], name='cuff_rim', nu=128,
+             dent=0.008, wave=0.012, seed=seed + 3 + k)
+    import random
+    rnd = random.Random(seed)
     for k in range(12):
-        stud(part, 'Bronze', c, r, (z0 + z1) / 2, k * 30 + 15, r=0.055, lift=0.07)
+        stud(part, 'Bronze', c, r, (z0 + z1) / 2 + rnd.uniform(-0.02, 0.02), k * 30 + 15 + rnd.uniform(-4, 4),
+             r=0.055 * rnd.uniform(0.85, 1.1), lift=0.07)
 
 
 def belt():
@@ -328,7 +348,8 @@ def belt():
     c = (0.0, 0.0)
     for z0, z1, name in ((3.6, 3.96, 'belt'), (3.93, 4.29, 'belt_upper')):
         r = girth(['Torso'], c, z0, z1, nu, 0.03)
-        ring('Torso', 'Leather', c, (z0 + z1) / 2, r, [(x + 0.045, y) for x, y in rrect(0.09, z1 - z0, 0.03)], name=name)
+        ring('Torso', 'Leather', c, (z0 + z1) / 2, r, [(x + 0.045, y) for x, y in rrect(0.09, z1 - z0, 0.03)], name=name,
+             nu=160, dent=0.006, wave=0.02, seed=int(z0 * 100))
         if name == 'belt':
             for k in range(16):
                 stud('Torso', 'Bronze', c, r, 3.78, k * 22.5 + 11.25, r=0.06, lift=0.09)
@@ -344,9 +365,11 @@ def loincloth():
         NU, NV = 32, 26
         jag = [0.0] * (NU + 1)
         for i in range(1, NU, 2):
-            jag[i] = rnd.uniform(0.05, 0.2)
+            jag[i] = rnd.uniform(0.05, 0.28)
         for i in range(2, NU, 4):
-            jag[i] = rnd.uniform(0.0, 0.06)
+            jag[i] = rnd.uniform(0.0, 0.08)
+        for i in rnd.sample(range(3, NU - 3, 2), 3):       # a few long rips
+            jag[i] = -rnd.uniform(0.25, 0.45)
 
         def y_at(x, z):
             ys = [surf(['Torso'], (x, 0), math.pi / 2 * side, min(z, 4.2))] if z > 3.6 else []
@@ -397,8 +420,10 @@ def hip_strips():
             x, y = sec[j % len(sec)]
             tip = clamp((z - z0) / 0.2)
             x *= 0.55 + 0.45 * math.sqrt(tip)               # the strip rounds off at its tip
-            base = Vector((LEG_C[0], LEG_C[1], 0)) + dirn * (r + y)
-            return tuple(base + side * x + Vector((0, 0, z - 0.06 * (1 - tip))))
+            twist = 0.04 * math.sin(u * 5 + k) * x / 0.19       # worn leather doesn't hang flat
+            ragged = 0.035 * math.sin(x * 60 + k) * (1 - tip)    # a chewed, ragged tip
+            base = Vector((LEG_C[0], LEG_C[1], 0)) + dirn * (r + y + twist)
+            return tuple(base + side * x + Vector((0, 0, z - 0.06 * (1 - tip) + ragged)))
         surface('LeftLeg', 'Leather', fn, [i / 24 for i in range(25)], list(range(len(sec) + 1)), closed_v=True,
                 out=lambda p: (LEG_C[0], LEG_C[1], p[2]), name='strip')
         tip_r = surf(['LeftLeg'], LEG_C, t, z0 + 0.15) + lift + 0.03
@@ -407,6 +432,220 @@ def hip_strips():
 
 def clamp(x, a=0.0, b=1.0):
     return min(max(x, a), b)
+
+
+# ------------------------------------------------------------------ the hair: a wild mane, rigged for Smart Bones
+
+K = 1.835                       # this body is about 1.835x the R6 rig
+HEAD = Vector((0.0, 0.0, 7.33 + 0.5 * K))   # the head's centre (the R6 head, scaled to this body)
+HEAD_R = 0.6 * K + 0.02
+CHAINS = (-35, 15, 55, 90, 125, 165, 215)   # the hair's bone chains: angles round the head (90 = straight back)
+
+
+def head_dir(theta_deg, el_deg):
+    t, e = math.radians(theta_deg), math.radians(el_deg)
+    return Vector((math.cos(t) * math.cos(e), math.sin(t) * math.cos(e), math.sin(e)))
+
+
+def clump_path(theta, el, length, flare, seed_off=Vector()):
+    """a clump of hair from its root on the scalp: out and up a little for volume, then swept back and down, its tip
+    kicking outward"""
+    root = HEAD + head_dir(theta, el) * HEAD_R * Vector((1, 1, 0.95))
+    out = Vector((math.cos(math.radians(theta)), math.sin(math.radians(theta)), 0))
+    backish = (Vector((0, 1, 0)) * 0.75 + out * 0.6).normalized()
+    up = Vector((0, 0, 1))
+    p1 = root + head_dir(theta, el) * 0.32 + backish * 0.25 + up * 0.18 * (el / 60)
+    p2 = p1 + backish * 0.45 * length + out * 0.15 - up * 0.75 * length
+    p3 = p2 + backish * 0.25 * length + out * (0.25 + flare) - up * 0.75 * length + seed_off
+    # stay clear of the back and shoulders on the way down
+    for p in (p2, p3):
+        if p.z < 7.6:
+            p.y = max(p.y, 1.45 + 0.15 * (7.6 - p.z)) if theta > 30 and theta < 150 else p.y
+            rad = math.hypot(p.x, p.y)
+            if p.z < 7.5 and rad < 1.4:
+                s_ = 1.4 / max(rad, 1e-3)
+                p.x, p.y = p.x * s_, p.y * s_
+    return [root, p1, p2, p3]
+
+
+def catmull(pts, t):
+    n = len(pts) - 1
+    x = clamp(t) * n
+    i = min(int(x), n - 1)
+    f = x - i
+    p0, p1, p2, p3 = pts[max(i - 1, 0)], pts[i], pts[i + 1], pts[min(i + 2, n)]
+    return 0.5 * (2 * p1 + (p2 - p0) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f + (3 * p1 - p0 - 3 * p2 + p3) * f ** 3)
+
+
+def hair_clump(pts, width, rows=12, name='clump', tag=None):
+    """a clump: a lens-shaped section, widest a third of the way along, swept along the path to a point. Its
+    vertices remember how far along they are (for the rig)"""
+    sec = [(math.cos(TAU * k / 6), 0.35 * math.sin(TAU * k / 6)) for k in range(6)]
+
+    def frame(t):
+        p = catmull(pts, t)
+        tg = (catmull(pts, min(1, t + 1e-3)) - catmull(pts, max(0, t - 1e-3))).normalized()
+        radial = Vector((p.x - HEAD.x, p.y - HEAD.y, (p.z - HEAD.z) * 0.3)).normalized()
+        w = tg.cross(radial).normalized()
+        n = w.cross(tg).normalized()
+        return p, w, n
+
+    def fn(u, j):
+        t = u
+        p, w, n = frame(t)
+        wd = width * (0.55 + 0.45 * math.sin(math.pi * min(t / 0.35, 1.0) / 2)) * (1 - t) ** 0.85
+        x, y = sec[j % 6]
+        return tuple(p + w * x * wd + n * y * wd)
+    ob = surface('Hair', 'Hair', fn, [i / rows for i in range(rows + 1)], list(range(7)), closed_v=True,
+                 out=lambda q: tuple(HEAD), name=name)
+    ob['hair_kind'], ob['hair_theta'] = tag[0], float(tag[1])
+    return ob
+
+
+def scalp():
+    """the cap of hair on the head: down to a hairline across the brow, over the ears, low at the nape"""
+    def hairline(t):     # elevation (deg) of the hairline at angle t (front = -90)
+        f = math.cos(math.radians(t + 90))       # 1 at the front, -1 at the back
+        return 18 + 22 * max(f, 0) ** 2 - 40 * max(-f, 0)
+    nu, nv = 48, 10
+
+    def fn(u, v):
+        t = -90 + 360 * u
+        el = hairline(t) + (90 - hairline(t)) * v
+        return tuple(HEAD + head_dir(t, el) * (HEAD_R + 0.05) * Vector((1, 1, 0.95)))
+    ob = surface('Hair', 'Hair', fn, [i / nu for i in range(nu + 1)], [j / nv for j in range(nv + 1)], closed_u=True,
+                 out=lambda q: tuple(HEAD), name='scalp')
+    ob['hair_kind'], ob['hair_theta'] = 'scalp', 0.0
+    return ob
+
+
+def hair():
+    import random
+    rnd = random.Random(17)
+    rows = [(68, list(range(-150, 211, 22)), 1.0), (42, list(range(-40, 221, 18)), 1.15), (16, list(range(-10, 191, 16)), 1.2)]
+    scalp()
+    for el, thetas, ln in rows:
+        for th in thetas:
+            th_ = th + rnd.uniform(-6, 6)
+            if el < 50 and -135 < th_ < -45:
+                continue                       # leave the face clear
+            length = ln * rnd.uniform(0.75, 1.25) * (0.55 if -150 < th_ < -30 else 1.0)
+            pts = clump_path(th_, el + rnd.uniform(-5, 5), length, rnd.uniform(0.0, 0.35),
+                             Vector((rnd.uniform(-0.15, 0.15), rnd.uniform(-0.1, 0.2), rnd.uniform(-0.15, 0.15))))
+            hair_clump(pts, rnd.uniform(0.28, 0.4), tag=('clump', th_))
+    # strands framing the face, either side
+    for th in (-128, -52):
+        pts = clump_path(th, 30, 0.7, 0.1)
+        hair_clump(pts, 0.22, tag=('clump', th))
+
+
+def hair_rig(ob):
+    """bones for the mane: a root in the head and a chain of four down each of seven paths round the back and
+    sides. Every vertex blends between the two nearest chains (by the angle its clump grows from) and the two
+    nearest bones down them (by how far along its clump it is)"""
+    ad = bpy.data.armatures.new('HairRig')
+    arm = bpy.data.objects.new('HairRig', ad)
+    bpy.context.scene.collection.objects.link(arm)
+    knots = (0.0, 0.25, 0.5, 0.75, 1.0)
+    paths = {c: clump_path(c, 40, 1.15, 0.15) for c in CHAINS}
+    with bpy.context.temp_override(active_object=arm, object=arm, selected_objects=[arm], selected_editable_objects=[arm]):
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.mode_set(mode='EDIT')
+        root = ad.edit_bones.new('HairRoot')
+        root.head, root.tail = HEAD, HEAD + Vector((0, 0, 0.6))
+        for c, pts in paths.items():
+            parent = root
+            for k in range(4):
+                b = ad.edit_bones.new(f'Hair_{CHAINS.index(c)}_{k}')
+                b.head, b.tail = catmull(pts, knots[k]), catmull(pts, knots[k + 1])
+                b.parent = parent
+                b.use_connect = k > 0
+                parent = b
+        bpy.ops.object.mode_set(mode='OBJECT')
+    names = ['HairRoot'] + [f'Hair_{i}_{k}' for i in range(len(CHAINS)) for k in range(4)]
+    g = {n: ob.vertex_groups.new(name=n) for n in names}
+    tl = ob.data.attributes['hair_t'].data
+    al = ob.data.attributes['hair_theta'].data
+    for v in ob.data.vertices:
+        t, th = tl[v.index].value, al[v.index].value
+        if t < 0:
+            g['HairRoot'].add([v.index], 1.0, 'REPLACE')
+            continue
+        # the two nearest chains by angle
+        cs = sorted(range(len(CHAINS)), key=lambda i: abs(CHAINS[i] - th))[:2]
+        d0, d1 = abs(CHAINS[cs[0]] - th), abs(CHAINS[cs[1]] - th)
+        wc = {cs[0]: d1 / max(d0 + d1, 1e-6), cs[1]: d0 / max(d0 + d1, 1e-6)}
+        # down the chain: the root holds the first bit, then the bones in turn
+        pos = t * 4 - 0.5
+        w = {}
+        if pos < 0:
+            w['HairRoot'] = -pos * 2 if pos > -0.5 else 1.0
+            pos = 0
+        k = min(int(pos), 3)
+        f = pos - k
+        for c, wcc in wc.items():
+            for kk, wk in ((k, 1 - f), (min(k + 1, 3), f)):
+                n_ = f'Hair_{c}_{kk}'
+                w[n_] = w.get(n_, 0) + wcc * wk
+        best = sorted(w.items(), key=lambda kv: -kv[1])[:4]
+        tot = sum(x for _, x in best) or 1
+        for n_, x in best:
+            g[n_].add([v.index], x / tot, 'REPLACE')
+    ob.parent = arm
+    md = ob.modifiers.new('rig', 'ARMATURE')
+    md.object = arm
+    return arm
+
+
+def join_hair():
+    """the hair pieces into one mesh, each vertex tagged with how far along its clump it is and which angle the
+    clump grows from"""
+    obs = [o for p, o in A.PIECES if p == 'Hair']
+    bm = bmesh.new()
+    tl = bm.verts.layers.float.new('hair_t')
+    al = bm.verts.layers.float.new('hair_theta')
+    for o in obs:
+        kind, th = o['hair_kind'], o['hair_theta']
+        first = len(bm.verts)
+        bm.from_mesh(o.data)
+        bm.verts.ensure_lookup_table()
+        new = bm.verts[first:]
+        if kind == 'scalp':
+            for v in new:
+                v[tl], v[al] = -1.0, 90.0
+        else:
+            ends = sorted(new, key=lambda v: (v.co - HEAD).length)
+            root = ends[0].co
+            far = max((v.co - root).length for v in new) or 1
+            for v in new:
+                v[tl], v[al] = (v.co - root).length / far, float(th)
+        bpy.data.objects.remove(o)
+    me = bpy.data.meshes.new('Brute_Hair')
+    bm.to_mesh(me)
+    bm.free()
+    me.materials.append(MATS['Hair'])
+    ob = bpy.data.objects.new('Brute_Hair', me)
+    bpy.context.scene.collection.objects.link(ob)
+    A.PIECES[:] = [(p, o) for p, o in A.PIECES if p != 'Hair']
+    return ob
+
+
+def ref_head():
+    """the R6 head scaled to this body, for the snapshots (the player's own head is used in game)"""
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.fbx(filepath=A.RIG)
+    new = [o for o in bpy.data.objects if o not in before]
+    head = max(new, key=lambda o: (o.matrix_world @ Vector(o.bound_box[1])).z)
+    for o in new:
+        if o is not head:
+            bpy.data.objects.remove(o)
+    head.data.transform(head.matrix_world)
+    head.matrix_world = Matrix.Identity(4)
+    c = sum((v.co for v in head.data.vertices), Vector()) / len(head.data.vertices)
+    head.data.transform(Matrix.Translation(HEAD) @ Matrix.Scale(K, 4) @ Matrix.Translation(-c))
+    head.data.materials.clear()
+    head.data.materials.append(MATS['Skin_normal_torso'])
+    return head
 
 
 def gear():
@@ -420,20 +659,172 @@ def gear():
 
 
 def gear_materials():
-    """the gear's live materials (baked down later)"""
-    def pbr(name, base, rough, metal):
-        m = bpy.data.materials.new(name)
-        m.use_nodes = True
-        b = m.node_tree.nodes['Principled BSDF']
-        b.inputs['Base Color'].default_value = lin(base)
-        b.inputs['Roughness'].default_value = rough
-        b.inputs['Metallic'].default_value = metal
-        MATS[name] = m
-    pbr('Iron', '#2d2c2e', 0.45, 1.0)
-    pbr('Bronze', '#8a5f2c', 0.32, 1.0)
-    pbr('Leather', '#2b1c14', 0.6, 0.0)
-    pbr('Cloth', '#4a1a19', 0.85, 0.0)
+    """worn, battle-used materials: pitted and rusting iron, bronze dark with patina and green in its grooves,
+    scuffed and cracked leather, stained cloth. Each exposes OUT_COL / OUT_ROUGH / OUT_METAL for baking"""
+    for name, kind in (('Iron', 'iron'), ('Bronze', 'bronze'), ('Leather', 'leather'), ('Cloth', 'cloth'),
+                       ('Hair', 'hair')):
+        worn_material(name, kind)
     MATS['Steel'] = MATS['Bronze']
+
+
+def worn_material(name, kind):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    nt = m.node_tree
+    N, L = nt.nodes, nt.links
+    N.clear()
+    out = N.new('ShaderNodeOutputMaterial')
+    bsdf = N.new('ShaderNodeBsdfPrincipled')
+    L.new(bsdf.outputs[0], out.inputs['Surface'])
+    tc = N.new('ShaderNodeTexCoord')
+    geo = N.new('ShaderNodeNewGeometry')
+
+    def noise(scale, detail=4.0, rough=0.55, vec=None):
+        n = N.new('ShaderNodeTexNoise')
+        n.inputs['Scale'].default_value = scale
+        n.inputs['Detail'].default_value = detail
+        n.inputs['Roughness'].default_value = rough
+        L.new(vec or tc.outputs['Object'], n.inputs['Vector'])
+        return n.outputs['Fac']
+
+    def vor(scale, feat='F1', out_='Distance'):
+        n = N.new('ShaderNodeTexVoronoi')
+        n.feature = feat
+        n.inputs['Scale'].default_value = scale
+        L.new(tc.outputs['Object'], n.inputs['Vector'])
+        return n.outputs[out_]
+
+    def rng(x, a, b, c=0.0, d=1.0):
+        n = N.new('ShaderNodeMapRange')
+        n.clamp = True
+        L.new(x, n.inputs['Value'])
+        n.inputs[1].default_value, n.inputs[2].default_value = a, b
+        n.inputs[3].default_value, n.inputs[4].default_value = c, d
+        return n.outputs[0]
+
+    def op(o, a, b=None):
+        n = N.new('ShaderNodeMath')
+        n.operation = o
+        n.use_clamp = o in ('MULTIPLY', 'ADD', 'SUBTRACT')
+        for k, x in enumerate((a, b)):
+            if x is None:
+                continue
+            if isinstance(x, (int, float)):
+                n.inputs[k].default_value = x
+            else:
+                L.new(x, n.inputs[k])
+        return n.outputs[0]
+
+    def mix(f, a, b):
+        n = N.new('ShaderNodeMix')
+        n.data_type = 'RGBA'
+        if isinstance(f, (int, float)):
+            n.inputs['Factor'].default_value = f
+        else:
+            L.new(f, n.inputs['Factor'])
+        for sock, c in ((n.inputs[6], a), (n.inputs[7], b)):
+            if isinstance(c, tuple):
+                sock.default_value = c
+            else:
+                L.new(c, sock)
+        return n.outputs[2]
+    bev = N.new('ShaderNodeBevel')
+    bev.inputs['Radius'].default_value = 0.02
+    bev.samples = 8
+    dot = N.new('ShaderNodeVectorMath')
+    dot.operation = 'DOT_PRODUCT'
+    L.new(bev.outputs['Normal'], dot.inputs[0])
+    L.new(geo.outputs['Normal'], dot.inputs[1])
+    edge = rng(dot.outputs['Value'], 0.995, 0.93)                   # the worn high edges
+    ao = N.new('ShaderNodeAmbientOcclusion')
+    ao.only_local = True
+    ao.inputs['Distance'].default_value = 0.08
+    ao.samples = 16
+    crev = rng(ao.outputs['AO'], 0.95, 0.4)                         # the grooves and crevices
+    blot = rng(noise(2.5, 6, 0.65), 0.45, 0.7)                      # patches of wear and grime
+    if kind == 'iron':
+        rust = op('MAXIMUM', op('MULTIPLY', crev, 0.9), op('MULTIPLY', rng(noise(4.0, 8, 0.7), 0.55, 0.72), 0.8))
+        pits = rng(vor(90), 0.0, 0.25, 1.0, 0.0)
+        col = mix(rng(noise(12, 4), 0.3, 0.7, 0, 0.3), lin('#262628'), lin('#3a393c'))
+        col = mix(rust, col, mix(rng(noise(30, 3), 0.4, 0.6), lin('#4a2412'), lin('#7a3c18')))
+        col = mix(op('MULTIPLY', edge, 0.85), col, lin('#9a9894'))
+        col = mix(op('MULTIPLY', pits, 0.5), col, lin('#141212'))
+        rough = op('ADD', 0.38, op('ADD', op('MULTIPLY', rust, 0.5), op('MULTIPLY', edge, -0.15)))
+        metal = op('SUBTRACT', 1.0, op('MULTIPLY', rust, 0.8))
+        height = op('ADD', op('MULTIPLY', pits, -0.6), op('MULTIPLY', noise(25, 6), 0.3))
+    elif kind == 'bronze':
+        patina = op('MAXIMUM', op('MULTIPLY', crev, 0.95), op('MULTIPLY', blot, 0.55))
+        verd = op('MULTIPLY', rng(ao.outputs['AO'], 0.7, 0.35), rng(noise(6, 5), 0.5, 0.65))
+        col = mix(rng(noise(10, 4), 0.3, 0.7, 0, 0.4), lin('#7a5226'), lin('#93652f'))
+        col = mix(patina, col, lin('#2e2012'))
+        col = mix(verd, col, lin('#3d6656'))
+        col = mix(op('MULTIPLY', edge, 0.9), col, lin('#d19a52'))
+        rough = op('ADD', 0.3, op('ADD', op('MULTIPLY', patina, 0.45), op('MULTIPLY', edge, -0.12)))
+        metal = op('SUBTRACT', 1.0, op('MULTIPLY', op('MAXIMUM', patina, verd), 0.7))
+        height = op('ADD', op('MULTIPLY', noise(30, 6), 0.4), op('MULTIPLY', rng(vor(60), 0.0, 0.2, 1.0, 0.0), -0.3))
+    elif kind == 'leather':
+        cracks = rng(vor(28, 'DISTANCE_TO_EDGE'), 0.0, 0.03, 1.0, 0.0)
+        grain = noise(80, 6, 0.7)
+        col = mix(rng(noise(5, 5), 0.3, 0.7, 0, 0.5), lin('#24160e'), lin('#3a2416'))
+        col = mix(op('MULTIPLY', blot, 0.6), col, lin('#4f3a2a'))                 # scuffed and faded
+        col = mix(op('MULTIPLY', edge, 0.8), col, lin('#6b5240'))
+        col = mix(op('MULTIPLY', op('MAXIMUM', crev, cracks), 0.7), col, lin('#0e0806'))
+        rough = op('ADD', 0.6, op('ADD', op('MULTIPLY', blot, 0.15), op('MULTIPLY', edge, -0.1)))
+        metal = 0.0
+        height = op('ADD', op('MULTIPLY', grain, 0.4), op('MULTIPLY', cracks, -0.8))
+    elif kind == 'cloth':
+        low = N.new('ShaderNodeSeparateXYZ')
+        L.new(geo.outputs['Position'], low.inputs[0])
+        grime = op('MAXIMUM', rng(low.outputs['Z'], 2.6, 1.5), op('MULTIPLY', crev, 0.6))
+        weave = N.new('ShaderNodeTexWave')
+        weave.inputs['Scale'].default_value = 120
+        L.new(tc.outputs['Object'], weave.inputs['Vector'])
+        col = mix(rng(noise(3, 5), 0.3, 0.7, 0, 0.5), lin('#3f1514'), lin('#5a1f1c'))
+        col = mix(op('MULTIPLY', blot, 0.45), col, lin('#6e3a33'))                 # faded patches
+        col = mix(op('MULTIPLY', grime, 0.85), col, lin('#241a14'))                # dirt up from the hem
+        col = mix(op('MULTIPLY', weave.outputs['Fac'], 0.12), col, lin('#1a0c0b'))
+        rough = op('ADD', 0.82, op('MULTIPLY', grime, 0.1))
+        metal = 0.0
+        height = op('ADD', op('MULTIPLY', weave.outputs['Fac'], 0.5), op('MULTIPLY', noise(8, 6), 0.4))
+    else:   # hair: near-black, with a sheen running along the strands
+        sep = N.new('ShaderNodeUVMap')
+        sep.uv_map = 'Detail'
+        sx = N.new('ShaderNodeSeparateXYZ')
+        L.new(sep.outputs['UV'], sx.inputs[0])
+        strands = N.new('ShaderNodeTexWave')
+        strands.inputs['Scale'].default_value = 1.0
+        mp = N.new('ShaderNodeCombineXYZ')
+        L.new(op('MULTIPLY', sx.outputs['Y'], 60.0), mp.inputs[0])
+        L.new(mp.outputs[0], strands.inputs['Vector'])
+        col = mix(op('MULTIPLY', strands.outputs['Fac'], 0.35), lin('#120d0b'), lin('#2b211c'))
+        col = mix(op('MULTIPLY', crev, 0.7), col, lin('#060403'))
+        rough = op('ADD', 0.42, op('MULTIPLY', strands.outputs['Fac'], 0.15))
+        metal = 0.0
+        height = strands.outputs['Fac']
+    bump = N.new('ShaderNodeBump')
+    bump.inputs['Strength'].default_value = 0.35
+    bump.inputs['Distance'].default_value = 0.004
+    L.new(height, bump.inputs['Height'])
+    tags = {}
+    for tag, sock in (('COL', col), ('ROUGH', rough), ('NRM', bump.outputs['Normal'])):
+        r = N.new('NodeReroute')
+        r.name = 'OUT_' + tag
+        L.new(sock, r.inputs[0])
+        tags[tag] = r
+    mv = N.new('ShaderNodeValue') if isinstance(metal, float) else None
+    if mv:
+        mv.outputs[0].default_value = metal
+        metal = mv.outputs[0]
+    r = N.new('NodeReroute')
+    r.name = 'OUT_METAL'
+    L.new(metal, r.inputs[0])
+    tags['METAL'] = r
+    L.new(tags['COL'].outputs[0], bsdf.inputs['Base Color'])
+    L.new(tags['ROUGH'].outputs[0], bsdf.inputs['Roughness'])
+    L.new(tags['METAL'].outputs[0], bsdf.inputs['Metallic'])
+    L.new(tags['NRM'].outputs[0], bsdf.inputs['Normal'])
+    MATS[name] = m
+    return m
 
 
 # ------------------------------------------------------------------ step snapshots
@@ -513,6 +904,14 @@ def main():
     gear()
     if STAGE == 'gear':
         snapshot('step_02_gear', [], wire=False)
+        return
+    hair()
+    hob = join_hair()
+    rig = hair_rig(hob)
+    head = ref_head()
+    print('hair tris', sum(len(p.vertices) - 2 for p in hob.data.polygons), 'bones', len(rig.data.bones))
+    if STAGE == 'hair':
+        snapshot('step_03_hair', [hob], wire=False, target=(0, 0.3, 5.0), dist=31)
         return
 
 
