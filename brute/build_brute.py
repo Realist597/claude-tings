@@ -4,7 +4,8 @@ normal maps), for the Roblox R6 rig.
 Steps (each writes a snapshot to export/steps/):
     body      the body, its normal maps, and its skin maps painted from them: dark charcoal skin, the creases darker
               and the ridges catching the light, battle-worn (grime, dust, bruises, cuts, scrapes, dried blood, veins)
-    head      a plain R6 head scaled to the body and skinned like it, exported as Brute_Head.fbx
+    head      the R6 head scaled to the body with his face cut into it (face.py), baked onto a light game mesh,
+              and his glowing eyes; exported as Brute_Head.fbx
     gear      the worn gear fitted over the body: arm and leg cuffs, elbow guards with their spikes, the belt, the
               loincloth and the hip strips
 
@@ -58,18 +59,13 @@ def import_body():
 def skin_maps(nmap):
     """from a part's normal map: a colour map (dark grey-brown skin, its creases deepened and its ridges lit, mottled,
     then battle-worn: grime in the creases, dust, bruises, dried blood, cuts and scrapes), a roughness map (matte
-    all over), and a detail normal map laid over the body's own. Returns the three as Blender images.
-    nmap 'head' makes the same skin for the plain head: no muscles to follow, a 2:1 map that tiles round it"""
+    all over), and a detail normal map laid over the body's own. Returns the three as Blender images"""
     from scipy import ndimage as ndi
     from PIL import Image
-    head = nmap == 'head'
-    if head:
-        a = np.ones((512, 1024, 3)) * np.array([0.5, 0.5, 1.0])
-    else:
-        a = np.asarray(Image.open(os.path.join(SRC, nmap + '.png')).convert('RGB'), dtype=np.float64) / 255.0
+    a = np.asarray(Image.open(os.path.join(SRC, nmap + '.png')).convert('RGB'), dtype=np.float64) / 255.0
 
     def gf(x, sigma):
-        return ndi.gaussian_filter(x, sigma, mode='wrap' if head else 'reflect')
+        return ndi.gaussian_filter(x, sigma, mode='reflect')
     nx, ny = a[..., 0] * 2 - 1, -(a[..., 1] * 2 - 1)       # image rows run down; OpenGL green runs up
     curv = gf(np.gradient(nx, axis=1) + np.gradient(ny, axis=0), 1.5)
     curv /= np.percentile(np.abs(curv), 99) + 1e-6
@@ -90,15 +86,14 @@ def skin_maps(nmap):
     col = col * (1 - 0.18 * m) + c(SKIN['warm']) * 0.18 * m
     col *= (1 + 0.04 * fine)[..., None]
     # skin texture: pores and grain, a few old scars (lighter, raised), all kept inside the UV islands
-    island = np.ones((H, W), bool) if head else \
-        ndi.binary_erosion(np.abs(a - np.array([0.5, 0.5, 1.0])).sum(2) > 0.02, iterations=6)
+    island = ndi.binary_erosion(np.abs(a - np.array([0.5, 0.5, 1.0])).sum(2) > 0.02, iterations=6)
     pores = gf(rng.standard_normal((H, W)), 0.7)
     pores = np.clip(-pores / (np.abs(pores).max() + 1e-6) * 3, 0, 1) ** 1.5
     grain = gf(rng.standard_normal((H, W)), 2.5)
     grain /= np.abs(grain).max()
     scar = np.zeros((H, W))
     ys, xs = np.nonzero(island)
-    for k in range(5 if nmap == 'normal_torso' else 2 if head else 3):
+    for k in range(5 if nmap == 'normal_torso' else 3):
         i = rng.integers(len(xs))
         x0, y0 = xs[i], ys[i]
         ang, length = rng.uniform(0, math.pi), rng.uniform(40, 110)
@@ -140,7 +135,7 @@ def skin_maps(nmap):
     dust = blotch(18, 0.3)
     bruise = blotch(11, 0.5) * (0.5 + 0.5 * blotch(3, 0.0))
     spray = np.zeros((H, W))                                 # dried blood: spatters of specks round a few hits
-    for _ in range(4 if nmap == 'normal_torso' else 2 if head else 3):
+    for _ in range(4 if nmap == 'normal_torso' else 3):
         i = rng.integers(len(xs))
         cx_, cy_ = xs[i], ys[i]
         for _ in range(140):
@@ -150,10 +145,10 @@ def skin_maps(nmap):
             if 0 <= x < W and 0 <= y < H:
                 spray[y, x] = rng.uniform(0.4, 1.0)
     blood = np.clip(gf(spray, 0.9) * 6 + blotch(6, 0.75) * 0.8, 0, 1)
-    cuts = lines(7 if nmap == 'normal_torso' else 3 if head else 5, 18, 60, 0.7)
+    cuts = lines(7 if nmap == 'normal_torso' else 5, 18, 60, 0.7)
     # veins: meandering, branching, standing proud of the skin
     vein = np.zeros((H, W))
-    seeds = [None] * (16 if nmap == 'normal_torso' else 0 if head else 12)
+    seeds = [None] * (16 if nmap == 'normal_torso' else 12)
     while seeds:
         s0 = seeds.pop()
         if s0 is None:
@@ -627,49 +622,29 @@ K = 1.835                       # this body is about 1.835x the R6 rig
 HEAD = Vector((0.0, 0.0, 7.33 + 0.5 * K))   # the head's centre (the R6 head, scaled to this body)
 
 
-def plain_head():
-    """the head: a plain R6 head (a cylinder as tall as it is wide, its top and bottom edges rounded over by half its
-    radius), scaled to this body and skinned like it. UVs: round it across the map, from the bottom's middle up over
-    the top to the top's middle down it, so the 2:1 skin map lies on it evenly"""
-    R, rr = 0.6 * K, 0.3 * K
-    prof = [(R - rr) * k / 3 for k in range(4)]
-    prof = [(r, -R) for r in prof]
-    prof += [(R - rr + rr * math.sin(t), -R + rr - rr * math.cos(t)) for t in (math.pi / 2 * k / 6 for k in range(1, 7))]
-    prof += [(R, -R + rr + 2 * (R - rr) * k / 4) for k in range(1, 5)]
-    prof += [(R - rr + rr * math.cos(t), R - rr + rr * math.sin(t)) for t in (math.pi / 2 * k / 6 for k in range(1, 7))]
-    prof += [((R - rr) * (1 - k / 3), R) for k in range(1, 4)]
-    acc = [0.0]
-    for (r0, z0), (r1, z1) in zip(prof, prof[1:]):
-        acc.append(acc[-1] + math.hypot(r1 - r0, z1 - z0))
-    vs = [x / acc[-1] for x in acc]
-    nu = 40
-    bm = bmesh.new()
-    uvl = bm.loops.layers.uv.new('UVMap')
-    rings = []
-    for r, z in prof:
-        if r < 1e-6:
-            rings.append([bm.verts.new(HEAD + Vector((0, 0, z)))])
-        else:
-            rings.append([bm.verts.new(HEAD + Vector((r * math.cos(TAU * i / nu), r * math.sin(TAU * i / nu), z)))
-                          for i in range(nu)])
-    for j in range(len(rings) - 1):
-        lo, hi = rings[j], rings[j + 1]
-        for i in range(nu):
-            if len(lo) == 1:
-                vv = [(lo[0], ((i + 0.5) / nu, vs[j])), (hi[(i + 1) % nu], ((i + 1) / nu, vs[j + 1])),
-                      (hi[i], (i / nu, vs[j + 1]))]
-            elif len(hi) == 1:
-                vv = [(lo[i], (i / nu, vs[j])), (lo[(i + 1) % nu], ((i + 1) / nu, vs[j])),
-                      (hi[0], ((i + 0.5) / nu, vs[j + 1]))]
-            else:
-                vv = [(lo[i], (i / nu, vs[j])), (lo[(i + 1) % nu], ((i + 1) / nu, vs[j])),
-                      (hi[(i + 1) % nu], ((i + 1) / nu, vs[j + 1])), (hi[i], (i / nu, vs[j + 1]))]
-            f = bm.faces.new([v for v, _ in vv])
-            f.smooth = True
-            for loop, (_, uv) in zip(f.loops, vv):
-                loop[uvl].uv = uv
-    skin_material('head')
-    return A.finish('Head', 'Skin_head', bm, 0, 'Brute_Head')
+def face_head():
+    """the head: the R6 head scaled to this body with his face cut into it (face.py). The detailed sculpt's shape and
+    paint are baked onto a light game mesh, Brute_Head (its maps Brute_Head_Color / _Normal / _Roughness in
+    export/), and his eyes are their own mesh, Brute_Eyes, to glow (Neon in Roblox)"""
+    import face as F
+    S = 0.6 * K                                  # head radii to studs
+    hi = F.build_detail(S, HEAD)
+    head = F.build_game(S, HEAD)
+    maps = F.bake(head, hi, OUT, cage=0.03 * S, reach=0.09 * S)
+    bpy.data.objects.remove(hi)
+    head.data.materials.clear()
+    head.data.materials.append(F.baked_material('Skin_head', maps))
+    eyes = F.eyes(S, HEAD)
+    m = bpy.data.materials.new('Eyes_glow')
+    m.use_nodes = True
+    b = m.node_tree.nodes['Principled BSDF']
+    b.inputs['Base Color'].default_value = (1.0, 0.02, 0.01, 1)
+    b.inputs['Emission Color'].default_value = (1.0, 0.02, 0.01, 1)
+    b.inputs['Emission Strength'].default_value = 6.0
+    eyes.data.materials.append(m)
+    for ob in (head, eyes):
+        print(ob.name, 'tris', sum(len(p.vertices) - 2 for p in ob.data.polygons), flush=True)
+    return head, eyes
 
 
 def gear():
@@ -1039,11 +1014,11 @@ def bake_gear():
 
 
 def export_all(body, head, gear_obs, rigs):
-    """everything in one FBX: the body parts and the head (Brute_<part>), the gear (Brute_Gear_<part>), and the
-    loincloth flaps' armatures"""
+    """everything in one FBX: the body parts and the head (Brute_<part>) with the eyes (Brute_Eyes), the gear
+    (Brute_Gear_<part>), and the loincloth flaps' armatures"""
     for o in bpy.data.objects:
         o.select_set(False)
-    for o in [o for o, _ in body.values()] + [head] + list(gear_obs.values()) + rigs:
+    for o in [o for o, _ in body.values()] + list(head) + list(gear_obs.values()) + rigs:
         o.select_set(True)
     bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'Brute.fbx'), use_selection=True,
                              object_types={'MESH', 'ARMATURE'}, apply_scale_options='FBX_SCALE_ALL',
@@ -1053,8 +1028,9 @@ def export_all(body, head, gear_obs, rigs):
 
 
 def export_head(head):
+    """the head and its eyes on their own"""
     for o in bpy.data.objects:
-        o.select_set(o == head)
+        o.select_set(o in head)
     bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, 'Brute_Head.fbx'), use_selection=True, object_types={'MESH'},
                              apply_scale_options='FBX_SCALE_ALL', mesh_smooth_type='FACE', use_tspace=True,
                              path_mode='STRIP')
@@ -1072,21 +1048,20 @@ def main():
         snapshot('step_01_body', [o for o, _ in body.values()], wire=False)
         return
     if STAGE == 'head':
-        head = plain_head()
-        tris = sum(len(p.vertices) - 2 for p in head.data.polygons)
+        head = face_head()
+        tris = sum(len(p.vertices) - 2 for p in head[0].data.polygons)
         export_head(head)
-        head_snap('step_04_head', f'the head: a plain R6 head, {tris} triangles, skinned like the body')
+        head_snap('step_04_head', f'the head: the R6 head with his face cut in, {tris} triangles and the eyes')
         return
     body_bvh(body)
     if STAGE == 'all':
         gear_obs, rigs = bake_gear()
-        head = plain_head()
+        head = face_head()
         export_all(body, head, gear_obs, rigs)
         snapshot('step_11_final', [], wire=False)
         return
     gear_materials()
     gear()
-    plain_head()
     if STAGE == 'gear':
         snapshot('step_02_gear', [], wire=False)
         return

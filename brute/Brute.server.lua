@@ -1,9 +1,10 @@
 --[[
-	The Brute for R6 characters: his worn gear, and (optionally) his body and head.
+	The Brute for R6 characters: his worn gear, and (optionally) his body and his head with its glowing eyes.
 
 	Setup (once):
 	  1. Import export/Brute.fbx with the 3D Importer, as one model. It holds:
 	       Brute_Torso, Brute_LeftArm, Brute_RightArm, Brute_LeftLeg, Brute_RightLeg, Brute_Head   the body
+	       Brute_Eyes                                                       his eyes (made to glow: Neon, red)
 	       Brute_Gear_Torso, Brute_Gear_LeftArm, Brute_Gear_RightArm, Brute_Gear_LeftLeg,
 	       Brute_Gear_RightLeg                                                                   the gear
 	       Brute_Gear_LoinFront, Brute_Gear_LoinBack                       the loincloth's flaps, with bones
@@ -26,6 +27,7 @@ local EQUIP_ON_SPAWN = true
 local WEAR_BODY = true -- lay the Brute's body and head over the character's own (hidden) parts
 local HIDE_ACCESSORIES = false -- remove hats and hair the character spawns with
 local FLIP = false -- set to true if the gear comes in facing backwards
+local EYE_COLOR = Color3.fromRGB(255, 25, 15) -- the eyes glow this colour (Neon)
 
 -- each body part's name in the model, and the R6 part it goes on
 local PARTS = {
@@ -49,6 +51,10 @@ local GEAR = {
 
 -- where each piece of gear sits relative to its body part, read once from the template
 local offsets = {}
+local eyesOffset = TEMPLATE.Brute_Head.CFrame:ToObjectSpace(TEMPLATE.Brute_Eyes.CFrame)
+if FLIP then
+	eyesOffset = CFrame.Angles(0, math.pi, 0) * eyesOffset
+end
 for key, bodyKey in pairs(GEAR) do
 	local piece = TEMPLATE:FindFirstChild("Brute_Gear_" .. key)
 	local body = TEMPLATE:FindFirstChild("Brute_" .. bodyKey)
@@ -96,9 +102,22 @@ local function equip(character)
 				attach(shell, bodyPart, bodyPart.CFrame * turn, scaleFor(key, bodyPart), folder)
 				bodyPart.Transparency = 1
 				for _, item in bodyPart:GetChildren() do
-					if item:IsA("Decal") then -- the face moves onto the Brute's head
-						item.Parent = shell
+					if item:IsA("Decal") then -- the Brute's head has its own face: hide the character's
+						item.Transparency = 1
 					end
+				end
+				if key == "Head" then -- his eyes, glowing, in their sockets
+					local scale = scaleFor(key, bodyPart)
+					local eyes = TEMPLATE.Brute_Eyes:Clone()
+					for _, item in eyes:GetChildren() do -- a SurfaceAppearance would stop the Neon glowing
+						if item:IsA("SurfaceAppearance") then
+							item:Destroy()
+						end
+					end
+					eyes.Material = Enum.Material.Neon
+					eyes.Color = EYE_COLOR
+					local placed = bodyPart.CFrame * CFrame.new(eyesOffset.Position * scale) * eyesOffset.Rotation
+					attach(eyes, bodyPart, placed, scale, folder)
 				end
 			end
 		end
