@@ -24,6 +24,7 @@ granulation beads along the cage.
 | `Pendant.fbx` | `Pendant_Chain`, `Pendant_Charm`, and `Ref_Torso` (the R6 torso they were fitted to, used by the script to place them) |
 | `Pendant_Chain_Color.png`, `_Normal.png`, `_Roughness.png`, `_Metalness.png` | The chain's maps, 512 × 512. Every link shares the same patch of them |
 | `Pendant_Charm_Color.png`, `_Normal.png`, `_Roughness.png`, `_Metalness.png` | The pendant's maps, 1024 × 1024 |
+| `Pendant_Charm_Emissive.png` | The stone glowing, everything else black: an emissive map for the pendant |
 | `preview.png` | The game meshes with their baked maps on the R6 body, beside the reference |
 
 Normal maps are OpenGL, as Roblox expects.
