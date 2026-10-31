@@ -30,8 +30,8 @@ Normal maps are OpenGL, as Roblox expects.
 
 | Mesh | Triangles |
 |---|---|
-| `Pendant_Chain` | 8.4k |
-| `Pendant_Charm` | 4.2k |
+| `Pendant_Chain` | 5k |
+| `Pendant_Charm` | 3.1k |
 
 ## Putting it in your game
 

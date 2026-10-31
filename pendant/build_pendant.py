@@ -24,15 +24,15 @@ STAGE = A.STAGE
 OUT = os.path.join(HERE, 'export')
 
 TORSO = ((-1.0, 1.0), (-0.5, 0.5), (2.0, 4.0))   # the R6 torso's box (studs)
-LIFT = 0.082            # how far the pendant stands off the chest (its back just clears it)
-CHARM_SCALE = 1.3       # the pendant drawn below, scaled up to sit right against the chain
+LIFT = 0.064            # how far the pendant stands off the chest (its back just clears it)
+CHARM_SCALE = 0.95      # the pendant drawn below, scaled up to sit right against the chain
 
 # a chain link: a stadium of wire. Half the straight, the radius of its ends (both to the wire's centre), the wire
-LINK_H, LINK_R, WIRE = 0.022, 0.024, 0.012
+LINK_H, LINK_R, WIRE = 0.018, 0.02, 0.01
 PITCH = 2 * (LINK_H + LINK_R) - 2 * WIRE        # centre to centre, each link's ends through its neighbours'
 
 SILVER, OXIDE, HIGHLIGHT = '#c3c0bb', '#35302c', '#f1eee8'
-GEM_DARK, GEM_MID, GEM_LIGHT, GEM_SPARK = '#1a052e', '#43196e', '#7a4cb0', '#d4c0f0'
+GEM_DARK, GEM_MID, GEM_LIGHT, GEM_SPARK = '#14031f', '#3d1268', '#8a58c8', '#efe4ff'
 
 
 def lin(h):
@@ -171,7 +171,7 @@ class Builder:
     def tube(self, C, r, closed=False, around=None, up=(0, -1, 0), ends=True):
         C = np.asarray(C, float)
         T, N, B = frames(C, closed, up)
-        m = around or (20 if self.high else 6)
+        m = around or (20 if self.high else 5)
         sec = [(math.cos(TAU * j / m), math.sin(TAU * j / m)) for j in range(m)]
         r = np.broadcast_to(np.asarray(r, float), (len(C),))
         self.loft(C, N, B, sec, r, r, closed, cap0=ends and not closed, cap1=ends and not closed)
@@ -180,7 +180,7 @@ class Builder:
         """a sphere (or an ellipsoid, r a triple along the axes)"""
         r = np.broadcast_to(np.asarray(r, float), (3,))
         ax = np.eye(3) if axes is None else np.asarray(axes, float)
-        nu, nv = (20, 12) if self.high else (8, 5)
+        nu, nv = (20, 12) if self.high else (6, 4)
         C = [np.asarray(c) + ax[2] * r[2] * -math.cos(math.pi * k / nv) for k in range(nv + 1)]
         rad = [math.sin(math.pi * k / nv) for k in range(nv + 1)]
         sec = [(math.cos(TAU * j / nu), math.sin(TAU * j / nu)) for j in range(nu)]
@@ -248,7 +248,7 @@ def box_project(p, h):
 def chain_path():
     """the chain's line on the body (h 0 off it), evenly spaced at the links' pitch from the pendant round, the
     body's outward normal along it, and how far each point is (along the chain) from the pendant"""
-    half = [(0.0, -0.56, 3.33), (0.1, -0.545, 3.37), (0.26, -0.53, 3.56), (0.4, -0.52, 3.82), (0.47, -0.51, 3.985),
+    half = [(0.0, -0.56, 3.6), (0.1, -0.545, 3.63), (0.24, -0.53, 3.75), (0.38, -0.52, 3.9), (0.46, -0.51, 3.99),
             (0.55, -0.33, 4.03), (0.62, 0.0, 4.03), (0.56, 0.32, 4.03), (0.42, 0.51, 3.965), (0.21, 0.53, 3.875)]
     ctrl = half + [(0.0, 0.535, 3.85)] + [(-x, y, z) for x, y, z in reversed(half[1:])]
     P = catmull(ctrl, 3000, closed=True)
@@ -270,7 +270,7 @@ def chain_path():
 def link_template(high):
     """one link's wire: its centreline round the stadium (in its own plane: x along the chain, y across), the
     outward direction in the plane at each point, and the arc length"""
-    m = 56 if high else 12
+    m = 56 if high else 8
     per = 4 * LINK_H + TAU * LINK_R
     out = []
     for s in np.linspace(0, per, m, endpoint=False):
@@ -294,7 +294,7 @@ def chain(high):
     P, N, along, step = chain_path()
     bd = Builder('High_Chain' if high else 'Pendant_Chain', high)
     tpl = link_template(high)
-    around = 16 if high else 5
+    around = 16 if high else 4
     T = nrm(np.roll(P, -1, 0) - np.roll(P, 1, 0))
     centres = []
     for i in range(len(P)):
@@ -363,29 +363,32 @@ def at(t, off):
 
 
 def gem(bd):
-    """a pear brilliant: its crown (a table and a ring of triangular facets) toward the viewer, the pavilion
-    behind. Each facet its own flat face, painted on its own"""
-    n = 24
+    """a pear brilliant: its crown toward the viewer (a table, a ring of star and bezel facets, a ring of upper
+    girdle facets), the girdle, and the pavilion behind. Each facet its own flat face, painted on its own.
+    Returns the stone's middle"""
+    n = 32
     t = np.linspace(0, TAU, n, endpoint=False)
-    G = pear(t)
+    h = math.pi / n
     c = np.array([0, 0, GEM_TOP - GEM_H * 0.62])
-    Th = pear(t + math.pi / n)
-    Tb = c + (Th - c) * 0.56 + np.array([0, -0.045, 0])                # the table's corners, set back half a step
-    Gf = G + np.array([0, -0.004, 0])                                  # the girdle, front and back
-    Gb = G + np.array([0, 0.004, 0])
-    Pv = c + (G - c) * 0.42 + np.array([0, 0.036, 0])
+
+    def ring(tt, k, y):
+        return c + (pear(tt) - c) * k + np.array([0, y, 0])
+    Gf, Gb = ring(t, 1, -0.003), ring(t, 1, 0.003)                     # the girdle, front and back
+    U = ring(t + h, 0.8, -0.02)                                        # the upper girdle facets' points
+    S = ring(t, 0.55, -0.043)                                          # the table's corners
+    top = c + np.array([0, -0.046, 0])
+    Pv = ring(t + h, 0.5, 0.03)
     cul = c + np.array([0, 0.05, 0])
-    top = c + np.array([0, -0.047, 0])
     tris = []
     for i in range(n):
         j = (i + 1) % n
-        tris += [(Gf[i], Gf[j], Tb[i]), (Tb[i - 1], Gf[i], Tb[i]),          # bezel and upper-girdle facets
-                 (Tb[i], top, Tb[i - 1]),                                   # the table
+        tris += [(Gf[i], Gf[j], U[i]), (U[i - 1], Gf[i], U[i]),           # upper girdle facets
+                 (U[i - 1], U[i], S[i]), (S[i], U[i], S[j]),               # bezel and star facets
+                 (S[i], S[j], top),                                        # the table
                  (Gf[j], Gf[i], Gb[i]), (Gb[i], Gb[j], Gf[j]),               # the girdle's band
-                 (Gb[j], Gb[i], Pv[i]), (Pv[i], Pv[j], Gb[j]),               # the pavilion
-                 (Pv[j], Pv[i], cul)]
-    out = []
-    for k, tri in enumerate(tris):
+                 (Gb[i], Gb[j], Pv[i]), (Pv[i - 1], Gb[i], Pv[i]),           # the pavilion
+                 (Pv[i], Pv[i - 1], cul)]
+    for tri in tris:
         a, b, cc = (np.asarray(p, float) for p in tri)
         nn = nrm(np.cross(b - a, cc - a))
         if np.dot(nn, (a + b + cc) / 3 - c) < 0:
@@ -394,16 +397,15 @@ def gem(bd):
         e1 = nrm(b - a)
         e2 = np.cross(nn, e1)
         uvs = [((p - a).dot(e1), (p - a).dot(e2)) for p in (a, b, cc)]
-        f = bd.face([bd.vert(a), bd.vert(b), bd.vert(cc)], uvs, flat=1, gem=1)
-        out.append((f, nn, k))
-    return out
+        bd.face([bd.vert(a), bd.vert(b), bd.vert(cc)], uvs, flat=1, gem=1)
+    return c
 
 
 def charm(high):
     """the bail and its leaf, the ring, the cap, the bezel and its claws, the cage of thorns round it, the
     scrolls between, and the gem"""
     bd = Builder('High_Charm' if high else 'Pendant_Charm', high)
-    fine = 360 if high else 64
+    fine = 360 if high else 44
     # the bail: an eye the chain runs through, and a leaf hanging from it with curls either side
     a = np.linspace(0, TAU, 72 if high else 14, endpoint=False)
     bd.tube(np.stack([np.zeros_like(a), 0.048 * np.cos(a), 0.048 * np.sin(a)], 1), 0.011, closed=True,
@@ -486,8 +488,7 @@ def charm(high):
         for i in range(0, 720, 9):
             if P[i, 2] < GEM_TOP - 0.03:
                 bd.ball(P[i] + np.array([0, -0.0075, 0]), 0.0042)
-    facets = gem(bd)
-    return bd, facets
+    return bd, gem(bd)
 
 
 # ------------------------------------------------------------------ paint (the detailed meshes)
@@ -569,21 +570,28 @@ def paint_charm(ob, facets_n):
     metal = np.ones(len(V))
     gem_faces = ob['gem']
     rng = np.random.default_rng(8)
+    cg = np.array(ob['gem_centre'])
+    view = np.array([0, 1.0, 0])                                   # looking in at the chest
+    lights = [(nrm([-0.45, -1.0, 0.75]), 1.0), (nrm([0.7, -1.0, 0.2]), 0.45)]
     for p, g in zip(me.polygons, gem_faces):
         if not g:
             continue
         n = np.array(p.normal)
-        front = max(0.0, -n[1])
-        k = np.clip(0.15 + 0.7 * max(0.0, n @ L) + rng.normal(0, 0.18), 0, 1)
-        c = lin(GEM_DARK) + (lin(GEM_MID) - lin(GEM_DARK)) * min(k * 1.6, 1)
-        c = c + (lin(GEM_LIGHT) - c) * max(0.0, k - 0.62) * 2.2
-        if rng.random() < 0.12 and front > 0.3:
-            c = c + (lin(GEM_SPARK) - c) * 0.75
-        if abs(n[1]) > 0.97 and n[1] < 0:            # the table: a soft window into the stone
-            c = lin(GEM_MID)
+        fc = np.array(p.center) - cg
+        rho = min(1.0, math.hypot(fc[0] / (GEM_HW * CHARM_SCALE), fc[2] / (GEM_H * 0.55 * CHARM_SCALE)))
+        # light through the stone: bright in its heart, deep toward its edges, broken up by the facets behind
+        body = lin(GEM_LIGHT) * (1 - rho) ** 1.4 + lin(GEM_MID) * (1 - (1 - rho) ** 1.4)
+        body = body * (1 - 0.65 * rho ** 3) + lin(GEM_DARK) * 0.65 * rho ** 3
+        body = body * (0.75 + 0.5 * rng.random())
+        r = view - 2 * view.dot(n) * n                             # and the studio caught in its facets
+        glint = sum(w * np.clip((r @ d - 0.8) / 0.15, 0, 1) for d, w in lights)
+        c = body * (0.65 + 0.45 * max(0.0, n @ lights[0][0]))
+        c = c + (lin(GEM_SPARK) - c) * min(1.0, glint)
+        if n[1] > 0.2:                                             # the pavilion, behind: deep
+            c = lin(GEM_DARK)
         for vi in p.vertices:
             col[vi] = c
-            rough[vi] = 0.06
+            rough[vi] = 0.05
             metal[vi] = 0.0
     set_paint(ob, col, rough, metal)
 
@@ -745,8 +753,9 @@ def export(objs, refs):
 def build(high):
     bc, centres = chain(high)
     ch = bc.finish()
-    bp, _ = charm(high)
+    bp, gc = charm(high)
     cm = bp.finish()
+    cm['gem_centre'] = list(np.asarray(gc) * CHARM_SCALE + centres[0])
     cm.location = Vector(centres[0])            # the pendant hangs from the link through its bail
     cm.scale = (CHARM_SCALE,) * 3
     with bpy.context.temp_override(object=cm, active_object=cm, selected_objects=[cm], selected_editable_objects=[cm]):
